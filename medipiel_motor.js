@@ -98,29 +98,19 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const configCli = CONFIG.CLIENTES["MEDIPIEL"];
 
-  // 1. Obtención de agente y correo electrónico de la KAM
-  const shAsignacion = ss.getSheetByName("Asignacion_KAM");
+  // 1. Obtención de agente y correo electrónico de la KAM (fuente única: Asignacion_KAM)
   const shClientes = ss.getSheetByName("Listado clientes");
-  const shAgentes = ss.getSheetByName("Iniciales de agente");
-  
-  let diccCiudades = {};
-  let codigoAgente = "XX"; 
-  let kamEncargado = "";
-  let correoKam = ""; 
 
-  if (shAsignacion) {
-    const dataAsig = shAsignacion.getDataRange().getValues();
-    const headAsig = dataAsig[0].map(h => medipiel_normalizeKey_(h));
-    const cSap = headAsig.indexOf(medipiel_normalizeKey_("SAP ID"));
-    const cKam = headAsig.findIndex(h => h.includes("KAMENCARGADO") || h === "KAM");
-    if (cSap !== -1 && cKam !== -1) {
-      for (let i = 1; i < dataAsig.length; i++) {
-        if (String(dataAsig[i][cSap]).trim() === configCli.SOLICITANTE) {
-          kamEncargado = String(dataAsig[i][cKam]).trim(); 
-          break;
-        }
-      }
-    }
+  let diccCiudades = {};
+  let codigoAgente = "XX";
+  let kamEncargado = "";
+  let correoKam = "";
+
+  const kamInfo = obtenerInfoKamPorSolicitante_(configCli.SOLICITANTE);
+  if (kamInfo) {
+    if (kamInfo.nombre) kamEncargado = kamInfo.nombre;
+    if (kamInfo.iniciales) codigoAgente = kamInfo.iniciales;
+    if (kamInfo.correo) correoKam = kamInfo.correo;
   }
 
   if (shClientes) {
@@ -132,25 +122,6 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
       for (let i = 1; i < dataCli.length; i++) {
         const subsidiario = String(dataCli[i][cSub]).trim();
         if (subsidiario) diccCiudades[subsidiario] = String(dataCli[i][cPob]).trim();
-      }
-    }
-  }
-    
-  if (shAgentes && kamEncargado) {
-    const dataAg = shAgentes.getDataRange().getValues();
-    const headAg = dataAg[0].map(h => medipiel_normalizeKey_(h));
-    const cKamAg = headAg.findIndex(h => h.includes("KAMENCARGADO") || h === "KAM");
-    const cCodAg = headAg.findIndex(h => h.includes("CODIGO"));
-    const cCorreoAg = headAg.findIndex(h => h.includes("CORREO")); 
-    
-    if (cKamAg !== -1 && cCodAg !== -1) {
-      for (let i = 1; i < dataAg.length; i++) {
-        if (String(dataAg[i][cKamAg]).trim().toUpperCase() === kamEncargado.toUpperCase()) {
-          codigoAgente = String(dataAg[i][cCodAg]).trim(); 
-          let idxCorreo = cCorreoAg !== -1 ? cCorreoAg : 3;
-          correoKam = String(dataAg[i][idxCorreo]).trim();
-          break;
-        }
       }
     }
   }
