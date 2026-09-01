@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Order Hub - Colombia</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            isdin: {
+              black: '#2B2830',
+              red: '#E41F33',
+              blue: '#003893',
+              purple: '#9A64CD',
+              cyan: '#00BCD4',
+              white: '#FFFFFF',
+              grayLight: '#FAFAFA'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; background-color: #F8FAFC; color: #2B2830; }
+    .fade-in { animation: fadeIn 0.3s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden bg-slate-50">
+
+  <!-- ========================================== -->
+  <!-- HEADER: ISDIN COLOMBIA CON BANDERA         -->
+  <!-- ========================================== -->
+  <header class="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center z-10 shadow-sm">
+    <div class="flex items-center gap-3">
+      <h1 class="text-2xl font-black tracking-widest text-isdin-black">ISDIN</h1>
+      <span class="text-gray-300 font-light text-lg">|</span>
+      <span class="text-xs font-black tracking-widest uppercase">
+        <span class="text-amber-500">COL</span><span class="text-blue-700">OMB</span><span class="text-red-600">IA</span>
+      </span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span class="text-xs font-bold text-gray-600 bg-gray-100 border border-gray-200 px-3 py-1.5 rounded-md uppercase tracking-wider shadow-sm">ORDER HUB v2.5</span>
+    </div>
+  </header>
+
+  <!-- ========================================== -->
+  <!-- MAIN CONTENT                               -->
+  <!-- ========================================== -->
+  <main class="flex-1 overflow-y-auto p-8 max-w-7xl mx-auto w-full">
+
+    <!-- DASHBOARD PRINCIPAL -->
+    <div id="ui-dashboard" class="fade-in space-y-8">
+      
+      <!-- Títulos Centrados -->
+      <div class="text-center max-w-2xl mx-auto pt-4 pb-6">
+        <h2 class="text-3xl font-extrabold text-isdin-black tracking-tight">Módulos de Integración B2B</h2>
+        <p class="text-base text-gray-500 mt-2 font-medium">Seleccione el cliente para escanear, validar y procesar órdenes de compra.</p>
+        
+        <div class="mt-5 flex justify-center">
+          <button onclick="verificarTodosPendientes()" class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 hover:border-gray-300 rounded-lg text-xs font-bold text-gray-600 shadow-sm transition-all hover:bg-gray-50">
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            Actualizar Pendientes
+          </button>
+        </div>
+      </div>
+
+      <!-- Tarjetas de Clientes (Centradas en Grid) -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 max-w-5xl mx-auto">
+
+        <!-- CLIENTE 1: MEDIPIEL -->
+        <div class="group relative bg-white rounded-xl border border-gray-200 hover:border-isdin-cyan hover:shadow-lg transition-all duration-200 flex flex-col overflow-hidden">
+          <button onclick="verificarPendientes('MEDIPIEL', event)" class="btn-refresh absolute top-3 right-3 z-20 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-100 transition-colors" title="Verificar pendientes">
+            <svg id="icon-medipiel" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          </button>
+
+          <div onclick="abrirModulo('MEDIPIEL')" class="cursor-pointer flex flex-col h-full">
+            <div class="h-32 p-6 flex justify-center items-center bg-white border-b border-gray-50">
+              <img src="https://medipielsa.vtexassets.com/assets/vtex.file-manager-graphql/images/8ad4ba5c-b818-4bef-842f-47849305e369___0038068c169e131855f45cebe7fb9d74.svg" 
+                   alt="Logo Medipiel" 
+                   class="h-20 w-auto object-contain filter opacity-90 group-hover:opacity-100 transition-all duration-200 group-hover:scale-105">
+            </div>
+            <div class="p-5 flex-grow flex flex-col justify-center items-center bg-gray-50/50">
+              <h3 class="text-lg font-bold text-isdin-black text-center">Medipiel </h3>
+              <span id="badge-medipiel" class="mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-gray-100 text-gray-500 border border-gray-200">Estado: --</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CLIENTE 2: CMX -->
+        <div class="group relative bg-white rounded-xl border border-gray-200 hover:border-isdin-purple hover:shadow-lg transition-all duration-200 flex flex-col overflow-hidden">
+          <button onclick="verificarPendientes('CMX', event)" class="btn-refresh absolute top-3 right-3 z-20 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-100 transition-colors" title="Verificar pendientes">
+            <svg id="icon-cmx" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          </button>
+
+          <div onclick="abrirModulo('CMX')" class="cursor-pointer flex flex-col h-full">
+            <div class="h-32 p-6 flex justify-center items-center bg-white border-b border-gray-50">
+              <img src="https://lineaestetica.co/wp-content/uploads/2026/03/logo-linea-estetica-2026.png" 
+                   onerror="this.onerror=null; this.src='https://placehold.co/200x80/9A64CD/ffffff?text=L%C3%8DNEA+EST%C3%89TICA';" 
+                   alt="Logo CMX Línea Estética" 
+                   class="h-16 w-auto object-contain filter opacity-90 group-hover:opacity-100 transition-all duration-200 group-hover:scale-105">  
+            </div>
+            <div class="p-5 flex-grow flex flex-col justify-center items-center bg-gray-50/50">
+              <h3 class="text-lg font-bold text-isdin-black text-center">CMX </h3>
+              <span id="badge-cmx" class="mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-gray-100 text-gray-500 border border-gray-200">Estado: --</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CLIENTE 3: CEN -->
+        <div class="group relative bg-white rounded-xl border border-gray-200 hover:border-isdin-blue hover:shadow-lg transition-all duration-200 flex flex-col overflow-hidden">
+          <button onclick="verificarPendientes('CEN', event)" class="btn-refresh absolute top-3 right-3 z-20 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-100 transition-colors" title="Verificar pendientes">
+            <svg id="icon-cen" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          </button>
+
+          <div onclick="abrirModulo('CEN')" class="cursor-pointer flex flex-col h-full">
+            <div class="h-32 p-6 flex justify-center items-center bg-white border-b border-gray-50">
+              <div class="bg-isdin-blue px-4 py-2.5 rounded-xl shadow-sm flex items-center justify-center group-hover:scale-105 transition-transform duration-200">
+                <img src="https://cencarvajal.co/wp-content/uploads/2025/11/CEN_Division.png" 
+                     alt="Logo CEN Carvajal" 
+                     class="h-10 w-auto object-contain">
+              </div>
+            </div>
+            <div class="p-5 flex-grow flex flex-col justify-center items-center bg-gray-50/50">
+              <h3 class="text-lg font-bold text-isdin-black text-center">CEN </h3>
+              <span id="badge-cen" class="mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-gray-100 text-gray-500 border border-gray-200">Estado: --</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- INCLUIR WIZARD_UI -->
+    <?!= include('wizard_ui'); ?>
+
+  </main>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      verificarTodosPendientes();
+    });
+
+    function volverDashboard() {
+      document.querySelectorAll('.modulo-cliente').forEach(m => m.classList.add('hidden'));
+      document.getElementById('ui-dashboard').classList.remove('hidden');
+    }
+
+    function abrirModulo(cliente) {
+      document.getElementById('ui-dashboard').classList.add('hidden');
+      if (typeof wizardInit === 'function') {
+        wizardInit(cliente);
+      } else {
+        mostrarError("El asistente no se ha cargado correctamente.");
+      }
+    }
+
+    function verificarPendientes(cliente, event) {
+      if (event) event.stopPropagation();
+      const badge = document.getElementById(`badge-${cliente.toLowerCase()}`);
+      const icon = document.getElementById(`icon-${cliente.toLowerCase()}`);
+      
+      if (badge) {
+        badge.innerText = 'Cargando...';
+        badge.className = 'mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-gray-100 text-gray-400 border border-gray-200';
+      }
+      if (icon) icon.classList.add('animate-spin');
+
+      google.script.run
+        .withSuccessHandler((count) => {
+          if (icon) icon.classList.remove('animate-spin');
+          if (badge) {
+            if (count > 0) {
+              badge.innerText = `${count} pendientes`;
+              badge.className = 'mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 shadow-sm';
+            } else {
+              badge.innerText = 'Al día (0)';
+              badge.className = 'mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200';
+            }
+          }
+        })
+        .withFailureHandler((err) => {
+          if (icon) icon.classList.remove('animate-spin');
+          if (badge) {
+            badge.innerText = 'Error';
+            badge.className = 'mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-red-50 text-red-700 border border-red-200';
+          }
+        })
+        .contarArchivosPendientes(cliente);
+    }
+
+    function verificarTodosPendientes() {
+      ['MEDIPIEL', 'CMX', 'CEN'].forEach(cli => verificarPendientes(cli));
+    }
+
+    function mostrarError(msg) {
+      Swal.fire({
+        icon: 'error',
+        title: 'Atención',
+        html: msg,
+        confirmButtonColor: '#2B2830'
+      });
+    }
+
+    function descargarArchivoCSV(base64Data, fileName) {
+      if (!base64Data) return;
+      const cleanBase64 = String(base64Data).replace(/[\r\n]/g, '');
+      const link = document.createElement('a');
+      link.href = 'data:text/csv;charset=utf-8;base64,' + cleanBase64;
+      link.download = fileName || 'Pedido_SAP.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  </script>
+</body>
+</html>

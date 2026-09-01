@@ -1,0 +1,6 @@
+node_modules/
+
+# Ordenes reales de clientes (datos comerciales sensibles: precios, EAN, direcciones)
+# usadas localmente para validar los motores, no se versionan.
+Example CEN/
+Examples CMX/

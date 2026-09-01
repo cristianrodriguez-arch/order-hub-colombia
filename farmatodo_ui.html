@@ -1,0 +1,25 @@
+<div id="modulo-farmatodo" class="modulo-cliente">
+  <div class="bg-blue-50 border border-blue-100 p-4 rounded-lg mb-4">
+    <h4 class="text-blue-800 font-bold mb-1 italic">Módulo Farmatodo</h4>
+    <p class="text-xs text-blue-600">Este cliente requiere carga masiva desde el portal B2B.</p>
+  </div>
+
+  <div class="flex flex-col gap-4">
+    <button onclick="iniciarEscaneoGenerico('FARMATODO')" class="bg-white border-2 border-isdin-black p-4 rounded-xl flex items-center justify-between hover:bg-gray-50 transition-all">
+      <div class="text-left">
+        <span class="block font-bold">Escanear Pendientes</span>
+        <span class="text-xs text-gray-500">Busca PDFs en la carpeta compartida</span>
+      </div>
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+    </button>
+  </div>
+</div>
+
+<script>
+  // Inicializador requerido por AppCore.abrirModulo (Regla 1.1)
+  window.initModuloFARMATODO = function() {
+    const container = document.getElementById('modulo-farmatodo');
+    container.classList.add('active');
+    console.log("Módulo Farmatodo inicializado.");
+  };
+</script>

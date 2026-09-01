@@ -1,0 +1,777 @@
+<!-- ========================================================= -->
+<!-- WIZARD UNIFICADO DE CLIENTES (PROCESAMIENTO Y RESUMEN)   -->
+<!-- ========================================================= -->
+<div id="ui-wizard" class="modulo-cliente hidden fade-in h-full flex flex-col">
+
+  <!-- Header del Módulo -->
+  <div class="flex items-center gap-4 mb-6">
+    <button onclick="volverDashboard()" class="text-gray-400 hover:text-isdin-red transition-colors p-2 -ml-2 rounded-lg hover:bg-red-50" title="Volver al inicio">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+    </button>
+    <h1 id="wizard-titulo-modulo" class="text-2xl font-bold text-isdin-black"></h1>
+  </div>
+
+  <!-- 1. PANTALLA DE INICIO DE PROCESAMIENTO -->
+  <div id="wizard-start-step" class="text-center py-12 bg-isdin-white rounded-xl shadow-sm border border-gray-200 p-6">
+    <div class="mb-8 flex justify-center">
+      <div class="flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 border-4 border-blue-100 text-blue-600 shadow-inner">
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+      </div>
+    </div>
+
+    <h2 id="wizard-titulo-inicio" class="text-2xl font-bold text-isdin-black mb-2"></h2>
+    <p id="wizard-texto-inicio" class="text-gray-500 mb-6 max-w-lg mx-auto leading-relaxed"></p>
+
+    <button id="wizard-btn-inicio" onclick="wizardIniciarFlujo()" class="bg-isdin-black hover:opacity-90 text-white font-bold py-3.5 px-10 rounded-lg shadow-md transition-opacity text-lg"></button>
+  </div>
+
+  <!-- 2. PANTALLA DE CARGA (SPINNER) -->
+  <div id="wizard-loading" class="flex flex-col items-center justify-center py-16 text-center hidden">
+    <svg id="wizard-spinner" class="animate-spin h-10 w-10 text-isdin-red mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+    <h3 class="text-lg font-bold text-isdin-black" id="wizard-loading-text">Procesando...</h3>
+    <p class="text-sm text-gray-500 mt-1">Por favor espere unos segundos.</p>
+  </div>
+
+  <!-- 3. SELECTOR INICIAL MULTICLIENTE (CEN) -->
+  <div id="wizard-seccion-clientes-cen" class="hidden fade-in mb-8 bg-white rounded-xl p-6 border border-gray-200 shadow-sm text-center">
+    <h2 class="text-2xl font-extrabold text-isdin-black mb-2">Seleccione el cliente a tramitar</h2>
+    <p class="text-gray-500 text-sm mb-6 max-w-md mx-auto">Se identificaron los siguientes clientes en los archivos de CEN. Elija uno para continuar con la validación de sus órdenes.</p>
+    <div id="wizard-grid-clientes-cen" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-w-3xl mx-auto"></div>
+  </div>
+
+  <!-- BANNER INFORMATIVO CLIENTE ACTUAL -->
+  <div id="wizard-banner-cliente-actual" class="hidden mb-6 bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center justify-between shadow-2xs">
+    <div class="flex items-center gap-3">
+      <span class="bg-isdin-blue text-white text-xs font-bold px-3 py-1 rounded-full uppercase">Tramitando</span>
+      <h3 id="wizard-label-cliente-actual" class="font-extrabold text-isdin-black text-base"></h3>
+    </div>
+    <span id="wizard-label-cliente-contador" class="text-xs text-isdin-blue font-bold bg-white px-3 py-1 rounded-lg border border-blue-100"></span>
+  </div>
+
+  <!-- 4. CONTENEDOR DEL FLUJO PRINCIPAL DE VALIDACIÓN -->
+  <div id="wizard-flow-container" class="hidden fade-in pb-10">
+
+    <!-- Validación de EANs Faltantes -->
+    <div id="wizard-seccion-revision" class="hidden mb-8 bg-red-50 rounded-xl p-5 border border-red-200">
+      <div class="flex items-start gap-3 mb-4">
+        <div class="bg-isdin-red text-white p-1.5 rounded-md mt-0.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+        </div>
+        <div>
+          <h2 class="text-lg font-bold text-red-900">Validación: Faltan EANs en la Base</h2>
+          <p class="text-sm text-red-800">Se encontraron EANs que no están registrados en la hoja de Productos. Digítelos para emparejar manualmente.</p>
+        </div>
+      </div>
+      <div id="wizard-tabla-faltantes" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+      <div class="mt-5 border-t border-red-200 pt-4 flex justify-end">
+        <button onclick="wizardContinuarEan()" class="bg-isdin-red hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg transition duration-200 shadow-md">Registrar y continuar</button>
+      </div>
+    </div>
+
+    <!-- Paso 1: Fechas de Entrega -->
+    <div id="wizard-seccion-fechas" class="hidden mb-8">
+      <h2 id="wizard-titulo-fechas" class="text-lg font-bold text-isdin-black border-b pb-2 mb-4">1. Revise las fechas de entrega</h2>
+      <div id="wizard-lista-pedidos" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+    </div>
+
+    <!-- Paso 2: Asignación Automática (Solo productos con stock OK) -->
+    <div id="wizard-seccion-auto" class="hidden mb-8 bg-green-50/50 rounded-xl p-5 border border-green-200">
+      <h2 id="wizard-titulo-auto" class="text-lg font-bold text-green-900 mb-4">2. Asignación Automática de Stock</h2>
+      <div id="wizard-tabla-auto" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+    </div>
+
+    <!-- Paso 3: Múltiples Lotes / Alertas de Back Order -->
+    <div id="wizard-seccion-materiales" class="hidden mb-8 bg-blue-50 rounded-xl p-5 border border-blue-200">
+      <h2 id="wizard-titulo-materiales" class="text-lg font-bold text-blue-900 mb-4">3. Múltiples Lotes / Alertas de Stock (Back Order)</h2>
+      <div id="wizard-tabla-materiales" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+    </div>
+
+    <!-- Botón Principal Dinámico (Siguiente Cliente / Generar CSV) -->
+    <div id="wizard-seccion-guardar" class="hidden border-t border-gray-200 pt-6 mt-6 flex justify-between items-center flex-wrap gap-4">
+      <div class="flex flex-col gap-1">
+        <p class="text-sm text-gray-600 font-medium" id="wizard-resumen-texto"></p>
+        <label class="inline-flex items-center gap-2 cursor-pointer mt-1">
+          <input type="checkbox" id="wizard-check-notificar-kam" checked class="rounded border-gray-300 text-isdin-red focus:ring-isdin-red h-4 w-4">
+          <span class="text-xs text-gray-500 font-semibold select-none">Notificar automáticamente a la KAM por correo</span>
+        </label>
+      </div>
+      <button id="wizard-btn-guardar-principal" onclick="wizardAvanzarOGuardar()" class="bg-isdin-black hover:opacity-90 text-white font-bold py-3 px-8 rounded-lg transition duration-200 shadow-md">Generar CSV SAP</button>
+    </div>
+
+    <!-- 5. PANTALLA DE ÉXITO Y RESUMEN DETALLADO -->
+    <div id="wizard-seccion-descarga" class="hidden text-center py-12 fade-in">
+      <div class="bg-green-100 text-green-600 p-5 rounded-full inline-flex mb-5">
+        <svg class="w-14 h-14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+      </div>
+      <h2 id="wizard-titulo-exito" class="text-3xl font-bold text-isdin-black mb-3">¡Proceso Completado!</h2>
+      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente.</p>
+      <button id="wizard-btn-descargar-csv" class="bg-isdin-black hover:bg-gray-800 text-white font-bold py-4 px-10 rounded-lg transition duration-200 shadow-lg inline-flex items-center gap-3 mx-auto mt-2">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+        Descargar Archivo CSV
+      </button>
+
+      <div id="wizard-contenedor-resumen" class="mt-8 max-w-2xl mx-auto text-left bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+        <div class="w-full px-5 py-4 flex items-center bg-gray-50 border-b border-gray-200">
+          <span class="font-bold text-isdin-black text-sm flex items-center gap-2">
+            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 012-2h2a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+            Resumen de Facturación por Orden de Compra
+          </span>
+        </div>
+        <div id="wizard-detalle-resumen" class="p-6 space-y-6 max-h-[500px] overflow-y-auto bg-gray-50/50"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const CLIENTES_UI = {
+    MEDIPIEL: {
+      titulo: 'Pedidos MEDIPIEL',
+      tituloInicio: 'Integración de Órdenes (MEDIPIEL)',
+      textoInicio: 'Haga clic en el botón para escanear y extraer automáticamente los nuevos pedidos en PDF desde Google Drive.',
+      textoBotonInicio: 'Buscar órdenes de compra',
+      textoCargando: 'Extrayendo órdenes de MEDIPIEL...',
+      tituloSinResultados: 'Carpeta al día',
+      textoSinResultados: 'No hay órdenes nuevas de Medipiel o ya fueron procesadas.',
+      etiquetaCodigo: 'EAN PDF',
+      textoOmitir: 'Se eliminará de TODAS las órdenes de Medipiel actuales.',
+      textoGuardando: 'Generando CSV de MEDIPIEL y guardando en Sheets...',
+      tituloExito: '¡Proceso Medipiel Completado!',
+      prefijoError: '',
+      colorAccent: '#00BCD4',
+      fnPreAnalizar: 'preAnalizarMEDIPIEL',
+      fnGuardar: 'guardarDefinitivoMEDIPIEL',
+      fnGuardarDestinatario: 'medipiel_guardarNuevoDestinatario'
+    },
+    CMX: {
+      titulo: 'Pedidos CMX',
+      tituloInicio: 'Integración de Órdenes (CMX)',
+      textoInicio: 'Haga clic en el botón para extraer automáticamente los pedidos desde archivos Excel (.xlsm) en Drive.',
+      textoBotonInicio: 'Buscar órdenes Excel',
+      textoCargando: 'Convirtiendo y Procesando Excel...',
+      tituloSinResultados: 'Sin Resultados',
+      textoSinResultados: 'No se encontraron datos.',
+      etiquetaCodigo: 'EAN Excel',
+      textoOmitir: 'Se eliminará de TODAS las órdenes de CMX actuales.',
+      textoGuardando: 'Generando CSV de CMX y guardando en Sheets...',
+      tituloExito: '¡Proceso CMX Completado!',
+      prefijoError: 'Error procesando Excel CMX: ',
+      colorAccent: '#9A64CD',
+      fnPreAnalizar: 'preAnalizarCMX',
+      fnGuardar: 'guardarDefinitivoCMX',
+      fnGuardarDestinatario: 'cmx_guardarNuevoDestinatario'
+    },
+    CEN: {
+      titulo: 'Pedidos CEN (Portal Carvajal)',
+      tituloInicio: 'Integración de Órdenes Consolidadas (CEN)',
+      textoInicio: 'Haga clic en el botón para analizar los archivos Excel consolidados descargados del portal CEN.',
+      textoBotonInicio: 'Analizar consolidado CEN',
+      textoCargando: 'Consolidando clientes y validando OCs...',
+      tituloSinResultados: 'Sin Pedidos CEN Pendientes',
+      textoSinResultados: 'No se encontraron órdenes de compra nuevas o ya están registradas en el Consolidado.',
+      etiquetaCodigo: 'EAN Item',
+      textoOmitir: 'Se eliminará esta referencia de las órdenes de CEN.',
+      textoGuardando: 'Generando CSV de CEN y notificando a las KAMs...',
+      tituloExito: '¡Proceso CEN Completado!',
+      prefijoError: 'Error procesando CEN: ',
+      colorAccent: '#003893',
+      fnPreAnalizar: 'preAnalizarCEN',
+      fnGuardar: 'guardarDefinitivoCEN'
+    }
+  };
+
+  let wizardState = {
+    cliente: null,
+    config: null,
+    payloadRaw: null,
+    payloadActual: null,
+    clientesCenPendientes: [],
+    totalClientesCenIniciales: 0,
+    clienteCenSeleccionado: null,
+    materialesPreseleccionados: {},
+    productosAgrupados: [],
+    paquetesProcesados: []
+  };
+
+  function wizardInit(cliente) {
+    const config = CLIENTES_UI[cliente];
+    if (!config) {
+      mostrarError(`Módulo de ${cliente} no disponible.`);
+      volverDashboard();
+      return;
+    }
+
+    wizardState = {
+      cliente: cliente,
+      config: config,
+      payloadRaw: null,
+      payloadActual: null,
+      clientesCenPendientes: [],
+      totalClientesCenIniciales: 0,
+      clienteCenSeleccionado: null,
+      materialesPreseleccionados: {},
+      productosAgrupados: [],
+      paquetesProcesados: []
+    };
+
+    wizardResetFlujo();
+
+    document.getElementById('wizard-titulo-modulo').innerText = config.titulo;
+    document.getElementById('wizard-titulo-inicio').innerText = config.tituloInicio;
+    document.getElementById('wizard-texto-inicio').innerText = config.textoInicio;
+    document.getElementById('wizard-titulo-exito').innerText = config.tituloExito;
+    const btnInicio = document.getElementById('wizard-btn-inicio');
+    btnInicio.innerText = config.textoBotonInicio;
+    btnInicio.style.backgroundColor = config.colorAccent;
+    document.getElementById('wizard-spinner').style.color = config.colorAccent;
+
+    document.getElementById('ui-wizard').classList.remove('hidden');
+    document.getElementById('wizard-start-step').classList.remove('hidden');
+  }
+
+  function wizardResetFlujo() {
+    const secciones = [
+      'wizard-start-step', 'wizard-loading', 'wizard-seccion-clientes-cen', 'wizard-banner-cliente-actual',
+      'wizard-flow-container', 'wizard-seccion-revision', 'wizard-seccion-fechas', 'wizard-seccion-auto',
+      'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-seccion-descarga',
+      'wizard-contenedor-resumen'
+    ];
+    secciones.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    });
+
+    ['wizard-grid-clientes-cen', 'wizard-tabla-faltantes', 'wizard-lista-pedidos', 'wizard-tabla-auto',
+     'wizard-tabla-materiales', 'wizard-detalle-resumen'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '';
+    });
+    document.getElementById('wizard-resumen-texto').innerHTML = '';
+    document.getElementById('wizard-btn-descargar-csv').onclick = null;
+  }
+
+  function wizardIniciarFlujo() {
+    const cfg = wizardState.config;
+    document.getElementById('wizard-start-step').classList.add('hidden');
+    document.getElementById('wizard-loading').classList.remove('hidden');
+    document.getElementById('wizard-loading-text').innerText = cfg.textoCargando;
+
+    google.script.run
+      .withSuccessHandler(wizardProcesarRespuesta)
+      .withFailureHandler((err) => {
+        mostrarError((cfg.prefijoError || '') + err.message);
+        volverDashboard();
+      })[cfg.fnPreAnalizar]();
+  }
+
+  function wizardProcesarRespuesta(respuesta) {
+    const cfg = wizardState.config;
+    document.getElementById('wizard-loading').classList.add('hidden');
+    wizardState.payloadRaw = respuesta;
+
+    if (!respuesta || !respuesta.pedidosExtraidos || respuesta.pedidosExtraidos.length === 0) {
+      let msg = cfg.textoSinResultados;
+      if (respuesta && respuesta.yaProcesados && respuesta.yaProcesados.length > 0) {
+        msg = `Las siguientes órdenes de compra ya se encuentran registradas en el Consolidado y fueron omitidas para evitar duplicados: <br><br><span class="font-mono bg-gray-100 px-3 py-2 rounded text-red-600 font-bold block text-center border border-red-200 max-w-sm mx-auto shadow-sm">${respuesta.yaProcesados.join(', ')}</span>.`;
+      }
+      Swal.fire({ icon: 'info', title: cfg.tituloSinResultados, html: msg, confirmButtonColor: '#2B2830' });
+      volverDashboard();
+      return;
+    }
+
+    if (wizardState.cliente === 'CEN' && respuesta.clientesDetectados && respuesta.clientesDetectados.length > 0) {
+      wizardState.clientesCenPendientes = [...respuesta.clientesDetectados];
+      wizardState.totalClientesCenIniciales = respuesta.clientesDetectados.length;
+      wizardRenderSelectorClientesCen();
+    } else {
+      wizardState.payloadActual = respuesta;
+      document.getElementById('wizard-flow-container').classList.remove('hidden');
+      wizardCheckEansFaltantes();
+    }
+  }
+
+  function wizardRenderSelectorClientesCen() {
+    document.getElementById('wizard-seccion-clientes-cen').classList.remove('hidden');
+    document.getElementById('wizard-banner-cliente-actual').classList.add('hidden');
+    document.getElementById('wizard-flow-container').classList.add('hidden');
+    
+    const grid = document.getElementById('wizard-grid-clientes-cen');
+    grid.innerHTML = "";
+
+    wizardState.clientesCenPendientes.forEach(cli => {
+      grid.innerHTML += `
+        <div onclick="wizardSeleccionarClienteCen('${cli.key}')" 
+             class="cursor-pointer bg-blue-50/50 hover:bg-blue-100/60 border border-blue-200 rounded-xl p-5 text-center transition-all duration-200 shadow-2xs hover:shadow-md flex flex-col items-center justify-center gap-2 group">
+          <span class="font-extrabold text-isdin-black text-lg group-hover:text-isdin-blue transition-colors">${cli.nombreDisplay}</span>
+          <span class="bg-isdin-blue text-white text-xs font-extrabold px-3.5 py-1.5 rounded-full shadow-2xs">${cli.count} órdenes pendientes</span>
+        </div>
+      `;
+    });
+  }
+
+  function wizardSeleccionarClienteCen(cliKey) {
+    wizardState.clienteCenSeleccionado = cliKey;
+    document.getElementById('wizard-seccion-clientes-cen').classList.add('hidden');
+
+    const pedidosCli = wizardState.payloadRaw.pedidosExtraidos.filter(p => p.Cliente_Key === cliKey);
+    const ocsCliSet = new Set(pedidosCli.map(p => p.Pedido_ID));
+    const itemsCli = wizardState.payloadRaw.itemsExtraidos.filter(i => ocsCliSet.has(i.Pedido_ID));
+
+    wizardState.payloadActual = {
+      pedidosExtraidos: pedidosCli,
+      itemsExtraidos: itemsCli
+    };
+
+    const cliObj = wizardState.clientesCenPendientes.find(c => c.key === cliKey);
+    const banner = document.getElementById('wizard-banner-cliente-actual');
+    banner.classList.remove('hidden');
+    document.getElementById('wizard-label-cliente-actual').innerText = cliObj ? cliObj.nombreDisplay : "Cliente CEN";
+    
+    const procesadosCount = wizardState.totalClientesCenIniciales - wizardState.clientesCenPendientes.length + 1;
+    document.getElementById('wizard-label-cliente-contador').innerText = `Cliente ${procesadosCount} de ${wizardState.totalClientesCenIniciales}`;
+
+    document.getElementById('wizard-flow-container').classList.remove('hidden');
+    wizardCheckEansFaltantes();
+  }
+
+  function wizardCheckEansFaltantes() {
+    const cfg = wizardState.config;
+    const eansUnicos = {};
+
+    wizardState.payloadActual.itemsExtraidos.forEach(i => {
+      if (!i.EAN_Mapeado || !i.Materiales_Disponibles || i.Materiales_Disponibles.length === 0) {
+        if (!eansUnicos[i.Producto_Cod]) {
+          eansUnicos[i.Producto_Cod] = { ...i, CantTotal: parseInt(i.Cant) || 0 };
+        } else {
+          eansUnicos[i.Producto_Cod].CantTotal += (parseInt(i.Cant) || 0);
+        }
+      }
+    });
+    const faltantes = Object.values(eansUnicos);
+
+    if (faltantes.length > 0) {
+      document.getElementById('wizard-seccion-revision').classList.remove('hidden');
+      const contFaltantes = document.getElementById('wizard-tabla-faltantes');
+      contFaltantes.innerHTML = "";
+
+      faltantes.forEach(item => {
+        const cod = item.Producto_Cod;
+        contFaltantes.innerHTML += `
+          <div id="wizard_card_faltante_${cod}" class="relative bg-white p-4 rounded-lg border border-red-200 flex flex-col gap-2 shadow-sm pr-16">
+            <div>
+              <p class="text-xs text-isdin-black font-extrabold">${item.Descripcion} | <span class="text-gray-500 font-mono">EAN: ${cod}</span></p>
+              <p class="text-xs text-isdin-red font-semibold mt-1">Suma Req: ${item.CantTotal} ud.</p>
+            </div>
+            <input type="text" id="wizard_ean_${cod}" placeholder="Digitar Material SAP manual..."
+                   class="w-full mt-1 p-2 text-sm border border-gray-300 rounded outline-none focus:border-isdin-red">
+          </div>`;
+      });
+    } else {
+      wizardRenderEtapaPrincipal();
+    }
+  }
+
+  function wizardContinuarEan() {
+    try {
+      const inputs = document.querySelectorAll('[id^="wizard_ean_"]');
+      inputs.forEach(input => {
+        const cod = String(input.id.replace("wizard_ean_", "")).trim();
+        const val = input.value.trim();
+        if (val) {
+          const matForzado = [{ material: val, stock: 999999, isExpired: false, isManual: true }];
+          wizardState.payloadActual.itemsExtraidos.forEach(item => {
+            if (String(item.Producto_Cod).trim() === cod) {
+              item.EAN_Mapeado = cod;
+              item.Materiales_Disponibles = matForzado;
+            }
+          });
+        }
+      });
+
+      document.getElementById('wizard-seccion-revision').classList.add('hidden');
+      wizardRenderEtapaPrincipal();
+    } catch (e) {
+      mostrarError("Error procesando Materiales SAP manuales: " + e.message);
+    }
+  }
+
+  function wizardRenderEtapaPrincipal() {
+    wizardState.payloadActual.itemsExtraidos.forEach(item => {
+      if (!item.Materiales_Disponibles || item.Materiales_Disponibles.length === 0) {
+        item.Materiales_Disponibles = [{ material: item.EAN_Mapeado || "SIN_EAN", stock: 0, isExpired: false, isManual: true }];
+      }
+    });
+
+    const mapaAgrupacion = {};
+    wizardState.payloadActual.itemsExtraidos.forEach(item => {
+      if (!mapaAgrupacion[item.Producto_Cod]) {
+        mapaAgrupacion[item.Producto_Cod] = {
+          Producto_Cod: item.Producto_Cod,
+          Descripcion: item.Descripcion,
+          CantTotal: 0,
+          EAN_Mapeado: item.EAN_Mapeado,
+          Materiales_Disponibles: item.Materiales_Disponibles,
+          Items_Originales: []
+        };
+      }
+      mapaAgrupacion[item.Producto_Cod].CantTotal += (parseInt(item.Cant) || 0);
+      mapaAgrupacion[item.Producto_Cod].Items_Originales.push(item);
+    });
+    wizardState.productosAgrupados = Object.values(mapaAgrupacion);
+
+    let stepCounter = 1;
+
+    // 1. Fechas de Entrega
+    document.getElementById('wizard-seccion-fechas').classList.remove('hidden');
+    document.getElementById('wizard-titulo-fechas').innerText = `${stepCounter++}. Programe las fechas de entrega`;
+    document.getElementById('wizard-lista-pedidos').innerHTML = wizardState.payloadActual.pedidosExtraidos.map(p => {
+      let fechaIso = new Date(Date.now() + 604800000).toISOString().split('T')[0];
+      return `
+      <div class="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
+        <p class="font-bold text-isdin-black mb-3">Orden: ${p.Pedido_ID} <span class="text-xs font-normal text-gray-400">(${p.Destinatario})</span></p>
+        <div class="grid grid-cols-1 gap-3">
+          <div><label class="block text-xs text-gray-500 mb-1">Fecha Entrega</label>
+               <input type="date" id="wizard_fecha_${p.Pedido_ID}" value="${fechaIso}" class="w-full p-2 border rounded"></div>
+        </div>
+      </div>`;
+    }).join('');
+
+    let itemsAuto = [];
+    let itemsMulti = [];
+
+    wizardState.productosAgrupados.forEach(grp => {
+      const stockTotal = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
+      const isBackOrder = stockTotal < grp.CantTotal;
+
+      if (isBackOrder) {
+        itemsMulti.push(grp);
+      } else {
+        itemsAuto.push(grp);
+      }
+    });
+
+    // 2. Asignación Automática (Solo productos con stock OK)
+    if (itemsAuto.length > 0) {
+      document.getElementById('wizard-seccion-auto').classList.remove('hidden');
+      document.getElementById('wizard-titulo-auto').innerText = `${stepCounter++}. Asignación Automática (Materiales OK)`;
+      document.getElementById('wizard-tabla-auto').innerHTML = itemsAuto.map(grp => {
+        let bestMat = grp.Materiales_Disponibles.find(m => m.stock >= grp.CantTotal) || grp.Materiales_Disponibles[0];
+        let matCode = bestMat ? bestMat.material : "SIN_MATERIAL";
+
+        return `
+          <div class="relative p-4 rounded-lg border border-green-200 bg-white shadow-sm flex flex-col gap-2">
+            <div>
+              <p class="text-sm font-bold text-isdin-black leading-tight" title="${grp.Descripcion}">${grp.Descripcion} <span class="text-xs text-gray-400 font-mono font-normal">| EAN: ${grp.Producto_Cod}</span></p>
+              <div class="flex items-center flex-wrap gap-2 mt-2 mb-1">
+                <span class="text-[10px] bg-green-100 text-green-800 border border-green-200 px-2 py-0.5 rounded font-bold">Req: ${grp.CantTotal} ud.</span>
+                <span class="text-[10px] text-gray-500">Auto Material SAP: <b>${matCode}</b></span>
+                <span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded text-[10px] font-bold">✅ OK</span>
+              </div>
+              <div class="mt-2 pt-2 border-t border-gray-100 flex items-center gap-2">
+                <span class="text-xs text-gray-500 font-semibold whitespace-nowrap">✏️ Cambiar Material SAP:</span>
+                <input type="text" id="wizard_override_mat_${grp.Producto_Cod}" placeholder="Ingresar nuevo ID (ej: 690033953)..."
+                       class="w-full p-1.5 text-xs border border-gray-300 rounded outline-none focus:border-isdin-red bg-gray-50 focus:bg-white font-mono">
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // 3. Múltiples Lotes / Alertas de Stock (Back Order)
+    if (itemsMulti.length > 0) {
+      document.getElementById('wizard-seccion-materiales').classList.remove('hidden');
+      document.getElementById('wizard-titulo-materiales').innerText = `${stepCounter++}. Múltiples Lotes / Alertas de Stock (Back Order)`;
+      document.getElementById('wizard-tabla-materiales').innerHTML = itemsMulti.map(grp => {
+        let bestIndex = grp.Materiales_Disponibles.findIndex(m => m.stock >= grp.CantTotal);
+        if (bestIndex === -1) bestIndex = 0;
+
+        let options = grp.Materiales_Disponibles.map((m, idx) => {
+          let extraInfo = m.stock === 0 ? " ❌ [SIN STOCK]" : (m.stock < grp.CantTotal ? " ⚠️ [BACK ORDER]" : " ✅ [OK]");
+          let fecha = m.fechaDisplay && m.fechaDisplay !== "Sin fecha" ? m.fechaDisplay : 'N/A';
+          let selectedAttr = (idx === bestIndex) ? " selected" : "";
+          return `<option value="${idx}"${selectedAttr}>Vence: ${fecha} (Stock: ${m.stock}) - ID: ${m.material}${extraInfo}</option>`;
+        }).join('');
+
+        options += `<option value="MANUAL_OVERRIDE">✏️ Digitar otro Material SAP manual...</option>`;
+
+        return `
+          <div class="relative bg-white p-4 rounded-lg border border-blue-200 shadow-sm flex flex-col gap-2">
+            <div>
+              <p class="text-sm font-bold text-isdin-black leading-tight" title="${grp.Descripcion}">${grp.Descripcion} <span class="text-xs text-gray-400 font-mono font-normal">| EAN: ${grp.Producto_Cod}</span></p>
+              <div class="flex items-center gap-2 mt-2">
+                <span class="text-[10px] bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 rounded font-bold">Req: ${grp.CantTotal} ud.</span>
+                <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-[10px] font-bold">⚠️ BACK ORDER</span>
+              </div>
+            </div>
+            <select id="wizard_mat_${grp.Producto_Cod}" onchange="wizardToggleManualInputMulti('${grp.Producto_Cod}', this.value)" class="w-full mt-1 p-2 text-sm border border-gray-300 bg-gray-50 rounded outline-none focus:border-isdin-red cursor-pointer">
+              ${options}
+            </select>
+            <div id="container_manual_multi_${grp.Producto_Cod}" class="hidden mt-1 pt-1">
+              <input type="text" id="wizard_override_mat_${grp.Producto_Cod}" placeholder="Digitar nuevo Material SAP manual..."
+                     class="w-full p-2 text-xs border border-isdin-red rounded outline-none bg-red-50/30 font-mono">
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    document.getElementById('wizard-seccion-guardar').classList.remove('hidden');
+    document.getElementById('wizard-resumen-texto').innerHTML = `<b>${wizardState.payloadActual.itemsExtraidos.length}</b> posiciones de <b>${wizardState.payloadActual.pedidosExtraidos.length}</b> órdenes listas para tramitar.`;
+
+    const btnPrincipal = document.getElementById('wizard-btn-guardar-principal');
+    const cliObj = wizardState.clientesCenPendientes.find(c => c.key === wizardState.clienteCenSeleccionado);
+    const nombreCliActual = cliObj ? cliObj.nombreDisplay : "Cliente";
+
+    if (wizardState.cliente === 'CEN' && wizardState.clientesCenPendientes.length > 1) {
+      btnPrincipal.innerText = `Procesar Órdenes de ${nombreCliActual}`;
+    } else {
+      btnPrincipal.innerText = "GENERAR CSV SAP";
+    }
+  }
+
+  function wizardToggleManualInputMulti(cod, selValue) {
+    const container = document.getElementById(`container_manual_multi_${cod}`);
+    if (container) {
+      if (selValue === "MANUAL_OVERRIDE") {
+        container.classList.remove('hidden');
+        const input = document.getElementById(`wizard_override_mat_${cod}`);
+        if (input) input.focus();
+      } else {
+        container.classList.add('hidden');
+        const input = document.getElementById(`wizard_override_mat_${cod}`);
+        if (input) input.value = "";
+      }
+    }
+  }
+
+  function wizardAvanzarOGuardar() {
+    wizardGuardarTodo();
+  }
+
+  function wizardGuardarTodo() {
+    const cfg = wizardState.config;
+    const fechasEntregas = {};
+    wizardState.payloadActual.pedidosExtraidos.forEach(p => {
+      const elFecha = document.getElementById(`wizard_fecha_${p.Pedido_ID}`);
+      if (elFecha) {
+        fechasEntregas[p.Pedido_ID] = { fecha: elFecha.value };
+      }
+    });
+
+    wizardState.materialesPreseleccionados = {};
+    const backordersCalculados = {};
+
+    wizardState.productosAgrupados.forEach(grp => {
+      let selectedStock = 0;
+      let matFinal = "";
+
+      const inputOverride = document.getElementById(`wizard_override_mat_${grp.Producto_Cod}`);
+      if (inputOverride && inputOverride.value.trim() !== "") {
+        matFinal = inputOverride.value.trim();
+        selectedStock = 999999;
+      } else {
+        if (grp.Materiales_Disponibles.length > 1) {
+          const sel = document.getElementById(`wizard_mat_${grp.Producto_Cod}`);
+          if (sel && sel.value !== "MANUAL_OVERRIDE") {
+            let idx = parseInt(sel.value);
+            matFinal = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].material : "";
+            selectedStock = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].stock : 0;
+          }
+        } else {
+          matFinal = grp.Materiales_Disponibles[0] ? grp.Materiales_Disponibles[0].material : "SIN_MATERIAL";
+          selectedStock = grp.Materiales_Disponibles[0] ? grp.Materiales_Disponibles[0].stock : 0;
+        }
+      }
+
+      let isBackOrder = selectedStock < grp.CantTotal;
+
+      grp.Items_Originales.forEach(itemOriginal => {
+        wizardState.materialesPreseleccionados[itemOriginal.Item_ID] = matFinal || "SIN_MATERIAL";
+        backordersCalculados[itemOriginal.Item_ID] = isBackOrder;
+      });
+    });
+
+    const notificarKAM = document.getElementById('wizard-check-notificar-kam') ? document.getElementById('wizard-check-notificar-kam').checked : true;
+
+    const paqueteFinal = {
+      pedidos: wizardState.payloadActual.pedidosExtraidos,
+      items: wizardState.payloadActual.itemsExtraidos,
+      fechasEntregas: fechasEntregas,
+      materialesSeleccionados: wizardState.materialesPreseleccionados,
+      backordersSeleccionados: backordersCalculados,
+      notificarKAM: notificarKAM
+    };
+
+    ['wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-banner-cliente-actual'].forEach(id => document.getElementById(id).classList.add('hidden'));
+    document.getElementById('wizard-loading').classList.remove('hidden');
+    document.getElementById('wizard-loading-text').innerText = cfg.textoGuardando;
+
+    google.script.run
+      .withSuccessHandler((respuestaObj) => {
+        document.getElementById('wizard-loading').classList.add('hidden');
+
+        wizardState.paquetesProcesados.push({ paquete: paqueteFinal, respuesta: respuestaObj });
+
+        if (wizardState.cliente === 'CEN' && wizardState.clientesCenPendientes.length > 0) {
+          const idxActual = wizardState.clientesCenPendientes.findIndex(c => c.key === wizardState.clienteCenSeleccionado);
+          if (idxActual !== -1) {
+            wizardState.clientesCenPendientes.splice(idxActual, 1);
+          }
+
+          if (wizardState.clientesCenPendientes.length > 0) {
+            wizardResetFlujo();
+            wizardRenderSelectorClientesCen();
+            Swal.fire({ 
+              icon: 'success', 
+              title: '¡Cliente Procesado!', 
+              text: 'Las órdenes del cliente fueron guardadas exitosamente. Seleccione el siguiente cliente a tramitar.', 
+              confirmButtonColor: '#2B2830' 
+            });
+            return;
+          }
+        }
+
+        document.getElementById('wizard-seccion-descarga').classList.remove('hidden');
+
+        const btnDescarga = document.getElementById('wizard-btn-descargar-csv');
+        btnDescarga.onclick = function () { descargarArchivoCSV(respuestaObj.csvData, respuestaObj.fileName); };
+
+        wizardGenerarResumenAcumuladoOC();
+
+        Swal.fire({ icon: 'success', title: '¡Proceso Completado!', text: 'Se han procesado exitosamente todas las órdenes de compra del lote.', confirmButtonColor: '#2B2830' });
+      })
+      .withFailureHandler((err) => { mostrarError(err.message); volverDashboard(); })[cfg.fnGuardar](paqueteFinal);
+  }
+
+  function wizardGenerarResumenAcumuladoOC() {
+    const resumen = {};
+
+    wizardState.paquetesProcesados.forEach(itemPaquete => {
+      const paquete = itemPaquete.paquete;
+
+      paquete.items.forEach(item => {
+        let mat = paquete.materialesSeleccionados[item.Item_ID] || "";
+        let fueInyectado = (mat !== "" && !mat.includes("SIN_"));
+        let isBackOrder = paquete.backordersSeleccionados[item.Item_ID] || false;
+        let subtotal = (parseInt(item.Cant) || 0) * (Number(item.Valor_Unitario) || 0);
+
+        if (!resumen[item.Pedido_ID]) {
+          resumen[item.Pedido_ID] = {
+            inyectados: 0,
+            totalFacturado: 0,
+            totalBackOrder: 0,
+            contieneBackOrders: false,
+            posiciones: []
+          };
+        }
+
+        if (fueInyectado) {
+          resumen[item.Pedido_ID].inyectados++;
+          
+          if (isBackOrder) {
+            resumen[item.Pedido_ID].totalBackOrder += subtotal;
+            resumen[item.Pedido_ID].contieneBackOrders = true;
+          } else {
+            resumen[item.Pedido_ID].totalFacturado += subtotal;
+          }
+
+          resumen[item.Pedido_ID].posiciones.push({
+            descripcion: item.Descripcion,
+            ean: item.Producto_Cod,
+            unidades: parseInt(item.Cant) || 0,
+            subtotal: subtotal,
+            isBackOrder: isBackOrder,
+            material: mat
+          });
+        }
+      });
+    });
+
+    let totalPosiciones = Object.values(resumen).reduce((sum, r) => sum + r.posiciones.length, 0);
+    if (totalPosiciones === 0) {
+      document.getElementById('wizard-contenedor-resumen').classList.add('hidden');
+      return;
+    }
+
+    const formatCOP = (num) => {
+      let val = Number(num);
+      if (isNaN(val)) return '$0';
+      return '$' + Math.round(val).toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    };
+
+    let html = `<div class="space-y-6">`;
+
+    for (const oc in resumen) {
+      const ord = resumen[oc];
+      if (ord.posiciones.length === 0) continue;
+
+      let badgeEncabezadoClass = ord.contieneBackOrders ? 'bg-amber-100 text-amber-800 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200';
+      let statusText = ord.contieneBackOrders ? '⚠️ Contiene Back Orders' : '✅ Completada con Éxito';
+
+      let totalsHtml = `Facturado (OK): <b class="text-emerald-700 font-bold">${formatCOP(ord.totalFacturado)}</b>`;
+      if (ord.totalBackOrder > 0) {
+        totalsHtml += ` <span class="mx-2 text-gray-300">|</span> Retenido (Back Order): <b class="text-amber-600 font-bold">${formatCOP(ord.totalBackOrder)}</b>`;
+      }
+
+      html += `
+        <div class="border border-gray-200 rounded-xl overflow-hidden shadow-sm bg-white">
+          <div class="p-5 border-b border-gray-200 flex flex-col gap-2 bg-gray-50/50">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <span class="font-bold text-isdin-black text-base">OC: ${oc}</span>
+              <div class="px-3 py-1 rounded-full border text-xs font-bold ${badgeEncabezadoClass}">
+                ${statusText}
+              </div>
+            </div>
+            <p class="text-xs text-gray-600 font-medium">
+              Posiciones a facturar: <b class="text-isdin-black">${ord.inyectados}</b> <span class="mx-1.5 text-gray-300">|</span> ${totalsHtml}
+            </p>
+          </div>
+          <div class="p-5 divide-y divide-gray-100">
+      `;
+
+      ord.posiciones.forEach(pos => {
+        let badgeClass = pos.isBackOrder ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800';
+        let badgeText = pos.isBackOrder ? '⚠️ Back Order' : '✅ OK';
+        let subtotalHtml = pos.subtotal > 0 ? ` <span class="mx-1.5 text-gray-300">|</span> Subtotal: <b class="text-gray-800">${formatCOP(pos.subtotal)}</b>` : '';
+
+        html += `
+          <div class="py-3 flex items-center justify-between gap-4">
+            <div class="min-w-0 flex-1">
+              <h4 class="font-bold text-isdin-black text-sm mb-0.5 truncate" title="${pos.descripcion}">${pos.descripcion}</h4>
+              <p class="text-xs text-gray-500 font-mono">
+                EAN: ${pos.ean} <span class="mx-1.5 text-gray-300">|</span> 
+                Material SAP: <b class="text-isdin-black">${pos.material}</b> <span class="mx-1.5 text-gray-300">|</span> 
+                Solicitado: <b class="text-gray-700">${pos.unidades} ud.</b>
+                ${subtotalHtml}
+              </p>
+            </div>
+            <div class="px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${badgeClass}">
+              ${badgeText}
+            </div>
+          </div>
+        `;
+      });
+
+      html += `</div></div>`;
+    }
+
+    html += `</div>`;
+
+    document.getElementById('wizard-detalle-resumen').innerHTML = html;
+    document.getElementById('wizard-contenedor-resumen').classList.remove('hidden');
+  }
+
+  function descargarArchivoCSV(base64Data, fileName) {
+    if (!base64Data) return;
+    const cleanBase64 = String(base64Data).replace(/[\r\n]/g, '');
+    const link = document.createElement('a');
+    link.href = 'data:text/csv;charset=utf-8;base64,' + cleanBase64;
+    link.download = fileName || 'Pedido_SAP.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+</script>
