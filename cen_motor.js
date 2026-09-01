@@ -39,22 +39,18 @@ function preAnalizarCEN() {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     const pedidosProcesados = new Set();
-    
+
     // ESCUDO 1: Carga en memoria de la combinación (OC + SAP ID) para antiduplicado estricto por cliente
+    // Los encabezados reales de CONSOLIDADO están en la fila 3 (fila 1 = título, ver CONSOLIDADO_HEADERS
+    // en main.js); se reutiliza medipiel_getHeaderMap_ (ya correcto) en vez de leer dataCons[0].
     if (shConsolidado && shConsolidado.getLastRow() >= 3) {
-      const dataCons = shConsolidado.getDataRange().getValues();
-      const headCons = dataCons[0].map(h => cen_normalizeKey_(h));
-      
-      let colOcCons = 1;  // Orden de Compra (Columna B por defecto)
-      let colSapCons = 2; // Sap Id / Solicitante (Columna C por defecto)
+      const dataCons = shConsolidado.getRange(3, 1, shConsolidado.getLastRow() - 2, shConsolidado.getLastColumn()).getValues();
+      const headerMapCons = medipiel_getHeaderMap_(shConsolidado, 3);
 
-      const foundOcIdx = headCons.indexOf(cen_normalizeKey_("Orden de Compra"));
-      if (foundOcIdx !== -1) colOcCons = foundOcIdx;
+      const colOcCons = headerMapCons[medipiel_normalizeKey_("Orden De Compra")] ? headerMapCons[medipiel_normalizeKey_("Orden De Compra")] - 1 : 1;
+      const colSapCons = headerMapCons[medipiel_normalizeKey_("Sap Id")] ? headerMapCons[medipiel_normalizeKey_("Sap Id")] - 1 : 2;
 
-      const foundSapIdx = headCons.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
-      if (foundSapIdx !== -1) colSapCons = foundSapIdx;
-
-      for (let i = 1; i < dataCons.length; i++) {
+      for (let i = 0; i < dataCons.length; i++) {
         const ocVal = cen_limpiarOc_(dataCons[i][colOcCons]);
         const sapVal = cen_normalizeKey_(dataCons[i][colSapCons]);
         if (ocVal && sapVal) {
@@ -388,6 +384,11 @@ function guardarDefinitivoCEN(paquete) {
     const shAgentes = ss.getSheetByName("Iniciales de agente");
     const shAsignacion = ss.getSheetByName("Asignacion_KAM");
 
+    // Encabezados reales de CONSOLIDADO (fila 3) en vez de posiciones fijas: si se reordenan
+    // columnas en la hoja, esta escritura sigue apuntando al campo correcto por nombre.
+    const headerMapConsolidado = medipiel_getHeaderMap_(shConsolidado, 3);
+    const numColsConsolidado = Math.max(shConsolidado.getLastColumn() || CONSOLIDADO_HEADERS.length, CONSOLIDADO_HEADERS.length);
+
     const filasConsolidado = [];
     const filasCSV = [];
     let contadorPedidoCSV = 1;
@@ -458,21 +459,21 @@ function guardarDefinitivoCEN(paquete) {
           const idGenerado = prefix + consecutivoStr;
           if (!primerConsecutivo) primerConsecutivo = idGenerado;
 
-          filasConsolidado.push([
-            idGenerado,
-            p.Pedido_ID,
-            solicitanteSap,
-            p.Cliente_Nombre,
-            p.Fecha_Pedido,
-            p.Id_Destino,
-            p.Destinatario,
-            p.Ciudad,
-            paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
-            totalUnidades,
-            totalValor,
-            "", "",
-            kamInfo.name // Registra el nombre del KAM en la Columna N
-          ]);
+          filasConsolidado.push(medipiel_createRowArray_(headerMapConsolidado, {
+            "Id": idGenerado,
+            "Orden De Compra": p.Pedido_ID,
+            "Sap Id": solicitanteSap,
+            "Solicitante": p.Cliente_Nombre,
+            "Fecha Pedido": p.Fecha_Pedido,
+            "Id Destino": p.Id_Destino,
+            "Destinatario": p.Destinatario,
+            "Ciudad": p.Ciudad,
+            "Fecha entrega": paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
+            "Unidades": totalUnidades,
+            "Valor": totalValor,
+            "Observaciones": "",
+            "KAM": kamInfo.name
+          }, numColsConsolidado));
           contadorPedidoCSV++;
         }
       });
