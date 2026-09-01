@@ -758,14 +758,8 @@ function cmx_generarCsvSap_(paquete, nuevoIdStr) {
   const configCli = CONFIG.CLIENTES["CMX"];
   const sap = configCli.SAP || { CLASE_PEDIDO: "ZDIR", ORG_VENTAS: "Z011", CANAL: "10", SECTOR: "00" };
   
-  // Encabezados recortados a 16 columnas (Columna A a Columna P)
-  const headers = [
-    "Contador", "Nº Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc",
-    "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posición pedido",
-    "Material", "EAN", "Cantidad"
-  ];
-
-  const rows = [headers];
+  // Filas de 16 columnas (Columna A a Columna P), sin fila de encabezado: el cargador SAP no la espera.
+  const rows = [];
   let orderIndex = 0;
 
   paquete.pedidos.forEach((pedido) => {
