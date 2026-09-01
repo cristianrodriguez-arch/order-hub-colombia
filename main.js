@@ -72,7 +72,7 @@ const CONFIG = {
       }
     },
     "CEN": {
-      FOLDER_ID: "1hCjs2bI3YvvmcqIOh-NufG9CCh2Zx3RF", 
+      FOLDER_ID: "1hCjs2bI3YvvmcqIOh-NufG9CCh2Zx3RF",
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       FILE_QUERY: "mimeType contains 'spreadsheet' or mimeType contains 'excel'",
       SAP: {
@@ -80,50 +80,10 @@ const CONFIG = {
         ORG_VENTAS: "Z011",
         CANAL: "10",
         SECTOR: "00"
-      },
-      // TABLA DE HOMOLOGACIÓN: Mapea Razón Social / EAN del Comprador en CEN -> Cliente Interno ISDIN
-      MAPEO_CLIENTES: {
-        "BELLA PIEL": {
-          NOMBRE_CLIENTE: "BELLA PIEL",
-          SOLICITANTE: "11026727",
-          LISTA_PRECIOS: "Bella Piel",
-          aliases: ["Bella Piel S A S."]
-        },
-        "COLSUBSIDIO": {
-          NOMBRE_CLIENTE: "CAJA COLOMBIANA DE SUBSIDIO FAMILIA",
-          SOLICITANTE: "11026688",
-          LISTA_PRECIOS: "Distribuidor",
-          // El alias anterior ("Distribuidor") era el valor de LISTA_PRECIOS copiado por error:
-          // nunca coincidía con el comprador real "Colsubsidio" (verificado contra un archivo CEN
-          // real) y de paso habría capturado cualquier futuro comprador que contuviera la palabra
-          // "Distribuidor" en su razón social.
-          aliases: ["Colsubsidio"]
-        },
-        "OLIMPICA": {
-          NOMBRE_CLIENTE: "SUPERTIENDAS Y DROGUERIAS OLIMPICA",
-          SOLICITANTE: "11059838",
-          LISTA_PRECIOS: "Distribuidor",
-          aliases: ["SUPERTIENDAS Y DROGUERIAS OLIMPICAS S.A."]
-        },
-        "COPSERVIR": {
-          NOMBRE_CLIENTE: "COPERATIVA MULTIACTIVA DE SERVICIOS",
-          SOLICITANTE: "11072880",
-          LISTA_PRECIOS: "Distribuidor",
-          aliases: ["Copservir Ltda - Drogas La Rebaja"]
-        },
-        "CAFAM": {
-          NOMBRE_CLIENTE: "CAJA DE COMPENSACION FAMILIAR CAFAM",
-          SOLICITANTE: "11048830",
-          LISTA_PRECIOS: "Distribuidor",
-          aliases: ["Cafam"]
-        },
-        "COOPIDROGAS": {
-          NOMBRE_CLIENTE: "COOPERATIVA NACIONAL DE DROGUISTAS",
-          SOLICITANTE: "11026732",
-          LISTA_PRECIOS: "Copidrogas",
-          aliases: ["Coopidrogas"]
-        },
       }
+      // La homologación Razón Social/EAN del comprador CEN -> cliente interno ISDIN ya no vive
+      // acá: se movió a la hoja CEN_Clientes (ver cen_getHojaClientes_ en cen_motor.js) para que
+      // facturación pueda agregar/completar clientes nuevos sin necesitar un despliegue de código.
     }
   }
 };

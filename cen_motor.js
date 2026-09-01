@@ -113,6 +113,9 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
   const shProd = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
   const diccProductosGlobal = cen_getCatalogoProductosGlobal_(shProd);
 
+  const shClientesCEN = cen_getHojaClientes_(ss);
+  const mapeoClientes = cen_leerMapeoClientes_(shClientesCEN);
+
   archivos.forEach((file) => {
     let tempFileId = null;
     try {
@@ -156,11 +159,13 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
         const eanComprador = colCompradorEan !== -1 ? String(row[colCompradorEan]).trim() : "";
         const nombreComprador = colCompradorNombre !== -1 ? String(row[colCompradorNombre]).trim() : "CLIENTE_CEN";
 
-        const clienteInternoObj = cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli);
+        const clienteInternoObj = cen_identificarClienteInterno_(eanComprador, nombreComprador, mapeoClientes);
         if (!clienteInternoObj) {
-          // No inventar Solicitante SAP / Lista de precios: se reporta para que facturación
-          // registre este comprador en CONFIG.CLIENTES.CEN.MAPEO_CLIENTES antes de cargarlo.
-          const msgError = `Comprador CEN no identificado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Agréguelo a MAPEO_CLIENTES.`;
+          // No inventar Solicitante SAP / Lista de precios: se registra el comprador (pendiente,
+          // sin SAP ID) en la hoja CEN_Clientes para que facturación lo complete ahí mismo --
+          // sin pedirle a un desarrollador que edite código y despliegue.
+          cen_registrarClientePendiente_(shClientesCEN, mapeoClientes, eanComprador, nombreComprador);
+          const msgError = `Comprador CEN no identificado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Se agregó como pendiente en la hoja CEN_Clientes: complete SAP ID y Lista de Precios ahí.`;
           if (!errores.includes(msgError)) errores.push(msgError);
           continue;
         }
@@ -302,36 +307,123 @@ function cen_limpiarOc_(val) {
   return s.trim();
 }
 
+const CEN_SHEET_CLIENTES = "CEN_Clientes";
+const CEN_CLIENTES_HEADERS = ["Alias Comprador CEN", "EAN Comprador", "SAP ID", "Nombre Cliente", "Lista de Precios"];
+
+// Semilla inicial: los 6 compradores que antes vivían en CONFIG.CLIENTES.CEN.MAPEO_CLIENTES
+// (main.js) más "Comfandi" y "Distribuciones Axa S.A." (SAP ID ya existente en Asignacion_KAM,
+// nunca se habían agregado al mapeo). Solo se usa la primera vez que se crea la hoja.
+const CEN_CLIENTES_SEED = [
+  ["Bella Piel S A S.", "8301374610000", "11026727", "BELLA PIEL", "Bella Piel"],
+  ["Colsubsidio", "7701009000000", "11026688", "CAJA COLOMBIANA DE SUBSIDIO FAMILIA", "Distribuidor"],
+  ["SUPERTIENDAS Y DROGUERIAS OLIMPICAS S.A.", "7701008100015", "11059838", "SUPERTIENDAS Y DROGUERIAS OLIMPICA", "Distribuidor"],
+  ["Copservir Ltda - Drogas La Rebaja", "", "11072880", "COPERATIVA MULTIACTIVA DE SERVICIOS", "Distribuidor"],
+  ["Cafam", "7701011000005", "11048830", "CAJA DE COMPENSACION FAMILIAR CAFAM", "Distribuidor"],
+  ["Coopidrogas", "7707200904215", "11026732", "COOPERATIVA NACIONAL DE DROGUISTAS", "Copidrogas"],
+  ["Comfandi", "7701015000018", "11033303", "CAJA COMP FAMILIAR COMFANDI", "Distribuidor"],
+  ["Distribuciones Axa S.A.", "7709999108294", "11045975", "DISTRIBUCIONES AXA S.A.S.", "Distribuidor"]
+];
+
 /**
- * Identifica la razón social interna y credenciales SAP de ISDIN basadas en la tabla MAPEO_CLIENTES.
+ * Lee (o crea) la hoja CEN_Clientes: tabla de homologación Alias/EAN del comprador CEN -> cliente
+ * interno ISDIN. Reemplaza el antiguo CONFIG.CLIENTES.CEN.MAPEO_CLIENTES hardcodeado en main.js:
+ * facturación agrega o completa clientes nuevos editando esta hoja directamente, sin necesitar
+ * un cambio de código ni un despliegue.
+ *
+ * @param {SpreadsheetApp.Spreadsheet} ss Libro de cálculo activo.
+ * @return {SpreadsheetApp.Sheet} Hoja CEN_Clientes.
+ */
+function cen_getHojaClientes_(ss) {
+  let sh = ss.getSheetByName(CEN_SHEET_CLIENTES);
+  if (!sh) {
+    sh = ss.insertSheet(CEN_SHEET_CLIENTES);
+    sh.getRange(1, 1, 1, CEN_CLIENTES_HEADERS.length).setValues([CEN_CLIENTES_HEADERS]);
+    sh.getRange(2, 1, CEN_CLIENTES_SEED.length, CEN_CLIENTES_HEADERS.length).setValues(CEN_CLIENTES_SEED);
+  }
+  return sh;
+}
+
+/**
+ * Parsea CEN_Clientes a una lista en memoria. Una fila con SAP ID vacío es un comprador
+ * "pendiente" (auto-registrado por cen_registrarClientePendiente_, todavía sin completar
+ * por facturación): nunca cuenta como match, aunque su alias/EAN coincidan.
+ *
+ * @param {SpreadsheetApp.Sheet} sh Hoja CEN_Clientes.
+ * @return {Array<Object>} Lista de { alias, ean, sapId, nombre, listaPrecios } (alias/ean ya normalizados).
+ */
+function cen_leerMapeoClientes_(sh) {
+  const data = sh.getDataRange().getValues();
+  const filas = [];
+  for (let i = 1; i < data.length; i++) {
+    const aliasRaw = String(data[i][0] || "").trim();
+    const eanRaw = String(data[i][1] || "").trim();
+    if (!aliasRaw && !eanRaw) continue;
+    filas.push({
+      alias: cen_normalizeKey_(aliasRaw),
+      ean: cen_normalizeKey_(eanRaw),
+      sapId: String(data[i][2] || "").trim(),
+      nombre: String(data[i][3] || "").trim(),
+      listaPrecios: String(data[i][4] || "").trim()
+    });
+  }
+  return filas;
+}
+
+/**
+ * Identifica la razón social interna y credenciales SAP de ISDIN a partir de CEN_Clientes.
+ * Coincidencia exacta (no substring) por EAN o por alias normalizado -- evita el falso positivo
+ * que tenía el MAPEO_CLIENTES hardcodeado (un alias demasiado genérico podía capturar
+ * compradores que no le correspondían).
  *
  * @param {String} eanComprador EAN de la empresa compradora.
  * @param {String} nombreComprador Nombre o razón social expuesta en el portal CEN.
- * @param {Object} configCli Configuración general del cliente CEN.
- * @return {Object|null} Mapeo con key, nombreDisplay, solicitante y listaPrecios, o null si el
- *   comprador no existe en MAPEO_CLIENTES (no se debe inventar un solicitante/lista de precios).
+ * @param {Array<Object>} mapeoClientes Resultado de cen_leerMapeoClientes_.
+ * @return {Object|null} { key, nombreDisplay, solicitante, listaPrecios }, o null si el
+ *   comprador no tiene una fila con SAP ID asignado en CEN_Clientes.
  */
-function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli) {
-  const mapeo = configCli.MAPEO_CLIENTES || {};
+function cen_identificarClienteInterno_(eanComprador, nombreComprador, mapeoClientes) {
   const normComprador = cen_normalizeKey_(nombreComprador);
   const normEan = cen_normalizeKey_(eanComprador);
 
-  for (const key in mapeo) {
-    const cli = mapeo[key];
-    const matchEan = cli.eans && cli.eans.includes(normEan);
-    const matchNombre = cli.aliases && cli.aliases.some(alias => normComprador.includes(cen_normalizeKey_(alias)));
-
-    if (matchEan || matchNombre) {
+  for (const cli of mapeoClientes) {
+    if (!cli.sapId) continue; // fila pendiente, todavía no es un match válido
+    const matchEan = cli.ean && normEan && cli.ean === normEan;
+    const matchAlias = cli.alias && cli.alias === normComprador;
+    if (matchEan || matchAlias) {
       return {
-        key: key,
-        nombreDisplay: cli.NOMBRE_CLIENTE,
-        solicitante: cli.SOLICITANTE,
-        listaPrecios: cli.LISTA_PRECIOS
+        key: cli.alias || cli.ean,
+        nombreDisplay: cli.nombre || nombreComprador,
+        solicitante: cli.sapId,
+        listaPrecios: cli.listaPrecios
       };
     }
   }
 
   return null;
+}
+
+/**
+ * Autoregistra un comprador CEN no identificado como fila "pendiente" (SAP ID/Lista de Precios
+ * en blanco) en CEN_Clientes, para que facturación solo tenga que completar esas dos celdas --
+ * sin pedirle a un desarrollador que edite código. Idempotente: si ya existe una fila pendiente
+ * con el mismo alias/EAN (de este archivo o de una corrida anterior), no duplica la fila.
+ *
+ * @param {SpreadsheetApp.Sheet} sh Hoja CEN_Clientes.
+ * @param {Array<Object>} mapeoClientes Lista en memoria (se le agrega la nueva fila pendiente).
+ * @param {String} eanComprador EAN crudo del comprador, tal como viene del Excel.
+ * @param {String} nombreComprador Razón social cruda del comprador, tal como viene del Excel.
+ */
+function cen_registrarClientePendiente_(sh, mapeoClientes, eanComprador, nombreComprador) {
+  const normAlias = cen_normalizeKey_(nombreComprador);
+  const normEan = cen_normalizeKey_(eanComprador);
+
+  const yaPendiente = mapeoClientes.some(c =>
+    !c.sapId && ((c.ean && normEan && c.ean === normEan) || (c.alias && c.alias === normAlias))
+  );
+  if (yaPendiente) return;
+
+  sh.appendRow([nombreComprador, eanComprador, "", "", ""]);
+  mapeoClientes.push({ alias: normAlias, ean: normEan, sapId: "", nombre: "", listaPrecios: "" });
 }
 
 /**
