@@ -291,11 +291,10 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
      throw new Error("No hay productos válidos seleccionados. Proceso abortado.");
   }
 
-  // 5. Generar archivo CSV en memoria
+  // 5. Generar archivo CSV en memoria (sin fila de encabezado: el cargador SAP no la espera)
   let csvFileName = `Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`;
   let csvString = "";
-  
-  filasCSV.unshift(medipiel_getEstructuraCSVHeaders_());
+
   csvString = filasCSV.map(row => row.map(val => {
     let s = String(val);
     return (s.includes(';') || s.includes('"')) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -588,10 +587,6 @@ function medipiel_parseItems_(texto, pedidoId, diccBodega, diccProductos) {
     });
   }
   return items;
-}
-
-function medipiel_getEstructuraCSVHeaders_() { 
-  return [ "Contador", "N Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc", "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posicion pedido", "Material", "EAN", "Cantidad" ]; 
 }
 
 function medipiel_normalizeKey_(str) {
