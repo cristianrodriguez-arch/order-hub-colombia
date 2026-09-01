@@ -385,8 +385,6 @@ function guardarDefinitivoCEN(paquete) {
     if (!shConsolidado) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
     const currentYearSuffix = String(new Date().getFullYear()).slice(-2);
-    const shAgentes = ss.getSheetByName("Iniciales de agente");
-    const shAsignacion = ss.getSheetByName("Asignacion_KAM");
 
     const filasConsolidado = [];
     const filasCSV = [];
@@ -405,7 +403,7 @@ function guardarDefinitivoCEN(paquete) {
       const solicitanteSap = primerPedido.Solicitante_SAP;
 
       // RESOLUCIÓN DE KAM E INICIALES DESDE Asignacion_KAM (Columna G = Correo, Columna H = Iniciales)
-      const kamInfo = cen_getKamInfo_(solicitanteSap, shAsignacion, shAgentes);
+      const kamInfo = cen_getKamInfo_(solicitanteSap);
       const prefix = kamInfo.initials + "-" + currentYearSuffix;
 
       let maxConsecutive = cen_obtenerMaxConsecutivo_(shConsolidado, prefix);
@@ -600,68 +598,22 @@ function cen_obtenerMaxConsecutivo_(shConsolidado, prefix) {
 }
 
 /**
- * Obtiene el Nombre, Iniciales (Columna H) y Correo electrónico (Columna G) del KAM asignado.
- * Escanea dinámicamente las cabeceras de las hojas Asignacion_KAM e Iniciales de agente.
- * 
+ * Obtiene el Nombre, Iniciales y Correo electrónico del KAM asignado a un SAP ID.
+ * Fuente única: obtenerInfoKamPorSolicitante_ (main.js), que lee Asignacion_KAM.
+ * Antes esta función tenía su propia lectura de Asignacion_KAM + un fallback a
+ * "Iniciales de agente" duplicando la misma lógica que MEDIPIEL/CMX implementan
+ * cada uno a su manera (con resultados distintos para el mismo KAM).
+ *
  * @param {String} solicitanteSap Código SAP ID del cliente solicitante (ej: 11026727).
- * @param {SpreadsheetApp.Sheet} shAsignacion Hoja Asignacion_KAM.
- * @param {SpreadsheetApp.Sheet} shAgentes Hoja Iniciales de agente.
  * @return {Object} Objeto con name, initials y email.
  */
-function cen_getKamInfo_(solicitanteSap, shAsignacion, shAgentes) {
-  let name = "SARA CARDONA";
-  let initials = "SC";
-  let email = "sara.cardona@isdin.com";
-
-  if (shAsignacion) {
-    const dataAsig = shAsignacion.getDataRange().getValues();
-    if (dataAsig.length >= 2) {
-      const headAsig = dataAsig[0].map(h => cen_normalizeKey_(h));
-      
-      const colSap = headAsig.findIndex(h => h.includes("SAP") || h.includes("ID"));
-      const colKam = headAsig.findIndex(h => h.includes("KAMENCARGADO") || h === "KAM" || h.includes("ENCARGADO"));
-      const colMail = headAsig.findIndex(h => h.includes("CORREO") || h.includes("EMAIL") || h.includes("MAIL"));
-      const colInic = headAsig.findIndex(h => h.includes("INICIAL") || h.includes("AGENTE") || h.includes("CODIGO"));
-
-      const normSolicitante = cen_normalizeKey_(solicitanteSap);
-
-      for (let i = 1; i < dataAsig.length; i++) {
-        const sapVal = colSap !== -1 ? cen_normalizeKey_(dataAsig[i][colSap]) : cen_normalizeKey_(dataAsig[i][0]);
-        if (sapVal === normSolicitante) {
-          if (colKam !== -1 && dataAsig[i][colKam]) name = String(dataAsig[i][colKam]).trim();
-          if (colMail !== -1 && dataAsig[i][colMail]) email = String(dataAsig[i][colMail]).trim();
-          if (colInic !== -1 && dataAsig[i][colInic]) initials = String(dataAsig[i][colInic]).trim().toUpperCase();
-          break;
-        }
-      }
-    }
-  }
-
-  // Fallback a Iniciales de agente si no estuviese en Asignacion_KAM
-  if (shAgentes && (!initials || initials === "SC" || !email || email === "sara.cardona@isdin.com")) {
-    const dataAg = shAgentes.getDataRange().getValues();
-    if (dataAg.length >= 2) {
-      const headAg = dataAg[0].map(h => cen_normalizeKey_(h));
-      const colNameAg = headAg.findIndex(h => h.includes("NOMBRE") || h.includes("AGENTE") || h.includes("KAM")) !== -1 
-                        ? headAg.findIndex(h => h.includes("NOMBRE") || h.includes("AGENTE") || h.includes("KAM")) 
-                        : 0;
-      const colInicAg = headAg.findIndex(h => h.includes("INICIAL") || h.includes("CODIGO") || h.includes("AGENTE"));
-      const colMailAg = headAg.findIndex(h => h.includes("CORREO") || h.includes("EMAIL") || h.includes("MAIL"));
-
-      const normName = cen_normalizeKey_(name);
-
-      for (let i = 1; i < dataAg.length; i++) {
-        const nameAg = cen_normalizeKey_(dataAg[i][colNameAg]);
-        if (nameAg && (normName.includes(nameAg) || nameAg.includes(normName))) {
-          if (colInicAg !== -1 && dataAg[i][colInicAg]) initials = String(dataAg[i][colInicAg]).trim().toUpperCase();
-          if (colMailAg !== -1 && dataAg[i][colMailAg]) email = String(dataAg[i][colMailAg]).trim();
-          break;
-        }
-      }
-    }
-  }
-
-  return { name: name, initials: initials, email: email };
+function cen_getKamInfo_(solicitanteSap) {
+  const kamInfo = obtenerInfoKamPorSolicitante_(solicitanteSap);
+  return {
+    name: kamInfo && kamInfo.nombre ? kamInfo.nombre : "SARA CARDONA",
+    initials: kamInfo && kamInfo.iniciales ? kamInfo.iniciales : "SC",
+    email: kamInfo && kamInfo.correo ? kamInfo.correo : "sara.cardona@isdin.com"
+  };
 }
 
 /**

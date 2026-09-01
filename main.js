@@ -223,6 +223,50 @@ function obtenerDiccionarioDestinatarios() {
   return dicc;
 }
 
+/* STREAMING_CHUNK: Fuente única del KAM asignado por cliente (Asignacion_KAM)... */
+/**
+ * Lee Asignacion_KAM y devuelve el KAM asignado a un SAP ID (Solicitante).
+ * Única fuente de verdad para nombre/iniciales/correo del KAM: antes cada motor
+ * (MEDIPIEL, CMX, CEN) tenía su propia lectura de Asignacion_KAM y/o de
+ * "Iniciales de agente" (con resultados distintos para el mismo KAM).
+ *
+ * @param {String|Number} solicitanteSap SAP ID del cliente (columna "SAP ID").
+ * @return {Object|null} { nombre, iniciales, correo }, o null si el solicitante no
+ *   aparece en la hoja o no tiene KAM asignado (fila "SIN KAM", sin Correo/Iniciales).
+ */
+function obtenerInfoKamPorSolicitante_(solicitanteSap) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ss.getSheetByName("Asignacion_KAM");
+  if (!sh) return null;
+
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return null;
+
+  const headers = data[0].map(h => String(h).trim().toUpperCase());
+  const colSap = headers.indexOf("SAP ID");
+  const colKam = headers.indexOf("KAM ENCARGADO");
+  const colCorreo = headers.indexOf("CORREO");
+  const colIniciales = headers.indexOf("INICIALES");
+
+  if (colSap === -1) return null;
+
+  const normSolicitante = String(solicitanteSap).trim();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][colSap]).trim() === normSolicitante) {
+      const correo = colCorreo !== -1 ? String(data[i][colCorreo]).trim() : "";
+      const iniciales = colIniciales !== -1 ? String(data[i][colIniciales]).trim().toUpperCase() : "";
+      if (!correo && !iniciales) return null; // fila sin KAM asignado (ej. "SIN KAM")
+      return {
+        nombre: colKam !== -1 ? String(data[i][colKam]).trim() : "",
+        iniciales: iniciales,
+        correo: correo
+      };
+    }
+  }
+  return null;
+}
+
 /* STREAMING_CHUNK: Creando el mapa de existencias e inventario de Bodega... */
 function obtenerMapaBodegaGeneral_(sheet) {
   const map = {}; 

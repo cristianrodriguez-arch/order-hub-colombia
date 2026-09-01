@@ -576,50 +576,14 @@ function cmx_getCiudadParaCliente_(solicitanteId) {
 }
 
 function cmx_getKamInitialsAndName_(solicitanteId) {
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  const shAsignacion = ss.getSheetByName("Asignacion_KAM");
-  const shAgentes = ss.getSheetByName("Iniciales de agente");
-  
-  let kamName = "SARA CARDONA"; 
-  let kamInitials = "SC"; 
-  
-  const normSolicitante = cmx_normalizeKey_(solicitanteId);
-
-  if (shAsignacion) {
-    const dataAsig = shAsignacion.getDataRange().getValues();
-    const headAsig = dataAsig[0].map(h => cmx_normalizeKey_(h));
-    const cSap = headAsig.indexOf(cmx_normalizeKey_("SAP ID"));
-    const cKam = headAsig.findIndex(h => h.includes("KAMENCARGADO") || h === "KAM" || h.includes("ENCARGADO"));
-    
-    if (cSap !== -1 && cKam !== -1) {
-      for (let i = 1; i < dataAsig.length; i++) {
-        if (cmx_normalizeKey_(dataAsig[i][cSap]) === normSolicitante) {
-          kamName = String(dataAsig[i][cKam]).trim();
-          break;
-        }
-      }
-    }
-  }
-
-  if (shAgentes && kamName) {
-    const dataAg = shAgentes.getDataRange().getValues();
-    const headAg = dataAg[0].map(h => cmx_normalizeKey_(h));
-    const cInic = headAg.findIndex(h => h.includes("INICIAL") || h.includes("AGENTE") || h.includes("KAM") || h.includes("NOMBRE"));
-    
-    const normKamName = cmx_normalizeKey_(kamName);
-    if (cInic !== -1) {
-      for (let i = 1; i < dataAg.length; i++) {
-        const nameVal = cmx_normalizeKey_(dataAg[i][0]); 
-        const inicVal = String(dataAg[i][cInic]).trim().toUpperCase();
-        if (nameVal && (normKamName.includes(nameVal) || nameVal.includes(normKamName))) {
-          kamInitials = inicVal;
-          break;
-        }
-      }
-    }
-  }
-  
-  return { name: kamName, initials: kamInitials };
+  // Fuente única (Asignacion_KAM): antes esta función además cruzaba "Iniciales de
+  // agente" comparando por la columna equivocada (TEAM) y nunca acertaba.
+  const kamInfo = obtenerInfoKamPorSolicitante_(solicitanteId);
+  return {
+    name: kamInfo && kamInfo.nombre ? kamInfo.nombre : "SARA CARDONA",
+    initials: kamInfo && kamInfo.iniciales ? kamInfo.iniciales : "SC",
+    email: kamInfo && kamInfo.correo ? kamInfo.correo : "sara.cardona@isdin.com"
+  };
 }
 
 function guardarDefinitivoCMX(paquete) {
@@ -829,26 +793,7 @@ function cmx_generarCsvSap_(paquete, nuevoIdStr) {
 
 function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
   const kamInfo = cmx_getKamInitialsAndName_(CONFIG.CLIENTES["CMX"].SOLICITANTE);
-  let kamEmail = "sara.cardona@isdin.com"; 
-
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  const shAgentes = ss.getSheetByName("Iniciales de agente");
-  if (shAgentes) {
-    const dataAg = shAgentes.getDataRange().getValues();
-    const headAg = dataAg[0].map(h => cmx_normalizeKey_(h));
-    const cMail = headAg.findIndex(h => h.includes("MAIL") || h.includes("CORREO") || h.includes("EMAIL"));
-    
-    if (cMail !== -1) {
-      const normKamName = cmx_normalizeKey_(kamInfo.name);
-      for (let i = 1; i < dataAg.length; i++) {
-        const nameVal = cmx_normalizeKey_(dataAg[i][0]);
-        if (nameVal && (normKamName.includes(nameVal) || nameVal.includes(normKamName))) {
-          kamEmail = String(dataAg[i][cMail]).trim();
-          break;
-        }
-      }
-    }
-  }
+  const kamEmail = kamInfo.email;
 
   let htmlBody = `
     <div style="font-family: 'Inter', sans-serif; color: #2B2830; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E5E7EB; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
