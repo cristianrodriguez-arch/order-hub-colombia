@@ -107,11 +107,7 @@
         <svg class="w-14 h-14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
       </div>
       <h2 id="wizard-titulo-exito" class="text-3xl font-bold text-isdin-black mb-3">¡Proceso Completado!</h2>
-      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente.</p>
-      <button id="wizard-btn-descargar-csv" class="bg-isdin-black hover:bg-gray-800 text-white font-bold py-4 px-10 rounded-lg transition duration-200 shadow-lg inline-flex items-center gap-3 mx-auto mt-2">
-        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-        Descargar Archivo CSV
-      </button>
+      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente. El archivo CSV ya quedó guardado en la carpeta de Drive correspondiente.</p>
 
       <div id="wizard-contenedor-resumen" class="mt-8 max-w-2xl mx-auto text-left bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
         <div class="w-full px-5 py-4 flex items-center bg-gray-50 border-b border-gray-200">
@@ -251,7 +247,6 @@
       if (el) el.innerHTML = '';
     });
     document.getElementById('wizard-resumen-texto').innerHTML = '';
-    document.getElementById('wizard-btn-descargar-csv').onclick = null;
   }
 
   function wizardIniciarFlujo() {
@@ -636,9 +631,6 @@
 
         document.getElementById('wizard-seccion-descarga').classList.remove('hidden');
 
-        const btnDescarga = document.getElementById('wizard-btn-descargar-csv');
-        btnDescarga.onclick = function () { descargarArchivoCSV(respuestaObj.csvData, respuestaObj.fileName); };
-
         wizardGenerarResumenAcumuladoOC();
 
         Swal.fire({ icon: 'success', title: '¡Proceso Completado!', text: 'Se han procesado exitosamente todas las órdenes de compra del lote.', confirmButtonColor: '#2B2830' });
@@ -762,16 +754,5 @@
 
     document.getElementById('wizard-detalle-resumen').innerHTML = html;
     document.getElementById('wizard-contenedor-resumen').classList.remove('hidden');
-  }
-
-  function descargarArchivoCSV(base64Data, fileName) {
-    if (!base64Data) return;
-    const cleanBase64 = String(base64Data).replace(/[\r\n]/g, '');
-    const link = document.createElement('a');
-    link.href = 'data:text/csv;charset=utf-8;base64,' + cleanBase64;
-    link.download = fileName || 'Pedido_SAP.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   }
 </script>

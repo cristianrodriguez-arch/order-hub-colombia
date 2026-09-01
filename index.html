@@ -210,17 +210,6 @@
         confirmButtonColor: '#2B2830'
       });
     }
-
-    function descargarArchivoCSV(base64Data, fileName) {
-      if (!base64Data) return;
-      const cleanBase64 = String(base64Data).replace(/[\r\n]/g, '');
-      const link = document.createElement('a');
-      link.href = 'data:text/csv;charset=utf-8;base64,' + cleanBase64;
-      link.download = fileName || 'Pedido_SAP.csv';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
   </script>
 </body>
 </html>
