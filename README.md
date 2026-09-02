@@ -19,12 +19,33 @@ El CSV **no se descarga desde el navegador** — queda guardado en la carpeta de
 
 ## Clientes soportados
 
-| Cliente | Formato de entrada | Particularidad |
-|---|---|---|
-| **MEDIPIEL** | PDF (OCR) | El precio sale del propio PDF (columna COSTO UN) |
-| **CMX** | Excel (`.xls`/`.xlsx`/`.xlsm`) | Cada comprador usa su propia plantilla → lectura heurística. Precio desde la lista de precios del cliente |
-| **CEN** (portal Carvajal) | Excel consolidado | **Multicliente**: un archivo trae órdenes de varios clientes finales de ISDIN, que se homologan vía `MAPEO_CLIENTES` |
-| FARMATODO | — | Solo tarjeta en el dashboard, sin motor todavía |
+Cada uno es un módulo independiente en el dashboard, con su propio motor:
+
+| Módulo | Cliente / razón social | SAP ID | Formato de entrada | Particularidad |
+|---|---|---|---|---|
+| **MEDIPIEL** | MEDIPIEL S.A.S. | `11026712` | PDF (OCR) | El precio sale del propio PDF (columna COSTO UN) |
+| **CMX** | CMX S.A.S. (Línea Estética) | `11033482` | Excel (`.xls`/`.xlsx`/`.xlsm`) | Cada comprador usa su propia plantilla → lectura heurística. Precio desde la lista de precios del cliente |
+| **CEN** | *varios* (ver abajo) | *varios* | Excel consolidado del portal | **Multicliente**: un solo archivo trae órdenes de varios clientes finales |
+| FARMATODO | FARMATODO COLOMBIA S.A. | `11049529` ⁽¹⁾ | — | Solo tarjeta en el dashboard, sin motor todavía |
+
+⁽¹⁾ Farmatodo aún **no tiene entrada en `CONFIG.CLIENTES`**; ese SAP ID sale de la hoja `Asignacion_KAM`, no del código.
+
+### Clientes finales dentro de CEN (portal Carvajal)
+
+El archivo que baja del portal mezcla órdenes de varios clientes. Cada fila se homologa contra `CONFIG.CLIENTES.CEN.MAPEO_CLIENTES` (`main.js`) usando la razón social del comprador, y el wizard muestra una pantalla extra para tramitarlos uno por uno.
+
+| Comprador en el portal | Cliente interno ISDIN | SAP ID | Lista de precios |
+|---|---|---|---|
+| Bella Piel S A S. | BELLA PIEL | `11026727` | Bella Piel |
+| Colsubsidio | CAJA COLOMBIANA DE SUBSIDIO FAMILIA | `11026688` | Distribuidor |
+| SUPERTIENDAS Y DROGUERIAS OLIMPICAS S.A. | SUPERTIENDAS Y DROGUERIAS OLIMPICA | `11059838` | Distribuidor |
+| Copservir Ltda - Drogas La Rebaja | COPERATIVA MULTIACTIVA DE SERVICIOS | `11072880` | Distribuidor |
+| Cafam | CAJA DE COMPENSACION FAMILIAR CAFAM | `11048830` | Distribuidor |
+| Coopidrogas | COOPERATIVA NACIONAL DE DROGUISTAS | `11026732` | Copidrogas |
+
+> **Pendientes de habilitar**: `Comfandi` (`11033303`) y `Distribuciones Axa S.A.` (`11045975`) aparecen como compradores en archivos reales del portal pero todavía no están en `MAPEO_CLIENTES`. Sus órdenes se reportan como error y se saltan hasta que se agreguen (rama `fix/cen-agregar-comfandi-axa`, en validación).
+
+Un comprador que no esté en la tabla **no se procesa**: se reporta en `errores` para que alguien lo agregue. Es deliberado — antes se le inventaba un SAP ID y se cargaba con la lista de precios de otro cliente.
 
 ## Stack
 
