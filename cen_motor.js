@@ -155,8 +155,15 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
 
         const eanComprador = colCompradorEan !== -1 ? String(row[colCompradorEan]).trim() : "";
         const nombreComprador = colCompradorNombre !== -1 ? String(row[colCompradorNombre]).trim() : "CLIENTE_CEN";
-        
+
         const clienteInternoObj = cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli);
+        if (!clienteInternoObj) {
+          // No inventar Solicitante SAP / Lista de precios: se reporta para que facturación
+          // registre este comprador en CONFIG.CLIENTES.CEN.MAPEO_CLIENTES antes de cargarlo.
+          const msgError = `Comprador CEN no identificado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Agréguelo a MAPEO_CLIENTES.`;
+          if (!errores.includes(msgError)) errores.push(msgError);
+          continue;
+        }
         const clienteKey = clienteInternoObj.key;
         const solicitanteSap = clienteInternoObj.solicitante;
 
@@ -297,11 +304,12 @@ function cen_limpiarOc_(val) {
 
 /**
  * Identifica la razón social interna y credenciales SAP de ISDIN basadas en la tabla MAPEO_CLIENTES.
- * 
+ *
  * @param {String} eanComprador EAN de la empresa compradora.
  * @param {String} nombreComprador Nombre o razón social expuesta en el portal CEN.
  * @param {Object} configCli Configuración general del cliente CEN.
- * @return {Object} Mapeo con key, nombreDisplay, solicitante y listaPrecios.
+ * @return {Object|null} Mapeo con key, nombreDisplay, solicitante y listaPrecios, o null si el
+ *   comprador no existe en MAPEO_CLIENTES (no se debe inventar un solicitante/lista de precios).
  */
 function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli) {
   const mapeo = configCli.MAPEO_CLIENTES || {};
@@ -312,7 +320,7 @@ function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli
     const cli = mapeo[key];
     const matchEan = cli.eans && cli.eans.includes(normEan);
     const matchNombre = cli.aliases && cli.aliases.some(alias => normComprador.includes(cen_normalizeKey_(alias)));
-    
+
     if (matchEan || matchNombre) {
       return {
         key: key,
@@ -323,12 +331,7 @@ function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli
     }
   }
 
-  return {
-    key: "CLIENTE_CEN_GENERICO",
-    nombreDisplay: nombreComprador || "CLIENTE CEN",
-    solicitante: configCli.SOLICITANTE || "11000000",
-    listaPrecios: "MEDIPIEL BEAUTYCALIA"
-  };
+  return null;
 }
 
 /**

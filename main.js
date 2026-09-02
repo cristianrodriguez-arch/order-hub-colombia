@@ -93,7 +93,11 @@ const CONFIG = {
           NOMBRE_CLIENTE: "CAJA COLOMBIANA DE SUBSIDIO FAMILIA",
           SOLICITANTE: "11026688",
           LISTA_PRECIOS: "Distribuidor",
-          aliases: ["Distribuidor"]
+          // El alias anterior ("Distribuidor") era el valor de LISTA_PRECIOS copiado por error:
+          // nunca coincidía con el comprador real "Colsubsidio" (verificado contra un archivo CEN
+          // real) y de paso habría capturado cualquier futuro comprador que contuviera la palabra
+          // "Distribuidor" en su razón social.
+          aliases: ["Colsubsidio"]
         },
         "OLIMPICA": {
           NOMBRE_CLIENTE: "SUPERTIENDAS Y DROGUERIAS OLIMPICA",
