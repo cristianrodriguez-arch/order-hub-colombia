@@ -498,6 +498,7 @@ function guardarDefinitivoCEN(paquete) {
     // ESCUDO 3: Traslado y renombrado de archivos Excel procesados a carpeta de históricos
     if (configCli.PROCESSED_FOLDER_ID) {
       const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
+      const folderOrigenId = configCli.FOLDER_ID;
       const archivosProcesadosMap = {};
 
       paquete.pedidos.forEach(p => {
@@ -512,22 +513,31 @@ function guardarDefinitivoCEN(paquete) {
       });
 
       for (const fileId in archivosProcesadosMap) {
+        const info = archivosProcesadosMap[fileId];
+        const nameClean = info.clienteNombre.replace(/[^a-zA-Z0-9_ -]/g, "").trim();
+        const fechaClean = info.fechaPedido.replace(/[\/]/g, "-");
+
+        let ext = ".xlsx";
         try {
-          const file = DriveApp.getFileById(fileId);
-          file.moveTo(folderDestino);
-
-          const info = archivosProcesadosMap[fileId];
-          const nameClean = info.clienteNombre.replace(/[^a-zA-Z0-9_ -]/g, "").trim();
-          const fechaClean = info.fechaPedido.replace(/[\/]/g, "-");
-          
-          const originalName = file.getName();
+          const originalName = DriveApp.getFileById(fileId).getName();
           const extIdx = originalName.lastIndexOf(".");
-          const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsx";
+          if (extIdx !== -1) ext = originalName.substring(extIdx);
+        } catch (eName) { /* se conserva la extensión .xlsx por defecto */ }
 
-          const nuevoNombre = `${nameClean}_CEN_${fechaClean}${ext}`;
-          file.setName(nuevoNombre);
-        } catch (eMove) {
-          console.error("Error trasladando archivo CEN procesado: " + eMove.message);
+        const nuevoNombre = `${nameClean}_CEN_${fechaClean}${ext}`;
+
+        // Intento primario vía Drive API avanzada (necesario en Unidades Compartidas);
+        // si falla, se recurre a DriveApp (mismo patrón que medipiel_motor.js:337-350).
+        try {
+          Drive.Files.patch({ title: nuevoNombre }, fileId, { addParents: configCli.PROCESSED_FOLDER_ID, removeParents: folderOrigenId, supportsAllDrives: true });
+        } catch (e1) {
+          try {
+            const file = DriveApp.getFileById(fileId);
+            file.setName(nuevoNombre);
+            file.moveTo(folderDestino);
+          } catch (e2) {
+            console.error(`Error definitivo al mover el archivo CEN ${fileId}: ${e2.message}`);
+          }
         }
       }
     }
