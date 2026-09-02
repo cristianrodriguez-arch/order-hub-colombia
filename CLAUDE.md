@@ -11,7 +11,9 @@ Portal web construido en **Google Apps Script** (no Node/React, aunque el repo t
 
 Cada cliente cumple condiciones distintas (formato de archivo, cómo llega la orden, cómo se identifica la bodega/destino), así que cada uno tiene su propio **motor** (`<cliente>_motor.js`) y su propia **interfaz** (`<cliente>_ui.html`), pero el pipeline de negocio (arriba) es el mismo para todos.
 
-Todo el código vive en un único proyecto Apps Script "plano" (sin carpetas reales; `.clasp.json` con `rootDir: ""`). No hay módulos: todo comparte el mismo scope global. El único "namespacing" es un prefijo de texto por cliente (`medipiel_`, `cmx_`).
+Todo el código vive en un único proyecto Apps Script "plano" (sin carpetas reales; `.clasp.json` con `rootDir: ""`). No hay módulos: todo comparte el mismo scope global. El único "namespacing" es un prefijo de texto por cliente (`medipiel_`, `cmx_`, `cen_`).
+
+> Para la orientación general del repo (qué hace, cómo desplegar, hojas que consume) ver [README.md](README.md). Este archivo es la referencia técnica profunda: histórico de cambios, decisiones y deuda.
 
 ## Archivos
 
@@ -23,7 +25,7 @@ Todo el código vive en un único proyecto Apps Script "plano" (sin carpetas rea
 | `farmatodo_ui.html` | Solo un stub visual, sin motor detrás. **No está incluido** desde `index.html` (su `initModuloFARMATODO` no existe en runtime; el botón del dashboard cae en "Módulo no disponible") |
 | `medipiel_motor.js` | Motor completo de MEDIPIEL (lee PDF vía OCR/regex, escribe Consolidado, genera CSV, mueve/renombra, envía correo al KAM) |
 | `cmx_motor.js` | Motor completo de CMX (lee Excel vía heurística de celdas, valoriza con la lista de precios del cliente, escribe Consolidado, genera CSV de 34 columnas, mueve/renombra, envía correo al KAM). **Reescrito por completo en el Cambio 6** |
-| `cen_motor.js` | Prototipo exploratorio, **no forma parte del pipeline real** (ver estado por cliente) |
+| `cen_motor.js` | Motor completo de CEN / portal Carvajal (lee el Excel consolidado, **multicliente**: homologa cada comprador contra `MAPEO_CLIENTES`, escribe Consolidado, genera CSV de 16 columnas, mueve/renombra, envía correo al KAM por cliente detectado). Ver Cambio 9 |
 | `test.js` | Script de diagnóstico manual de permisos de Drive (`testMoverArchivo`), no es una suite de pruebas automatizada |
 
 ## Estado real por cliente
@@ -32,7 +34,7 @@ Todo el código vive en un único proyecto Apps Script "plano" (sin carpetas rea
 |---|---|---|---|---|---|---|---|
 | **MEDIPIEL** | Completo | Wizard unificado (`CLIENTES_UI.MEDIPIEL` en `wizard_ui.html`) | Sí | Sí | Sí | Sí | Sí |
 | **CMX** | Completo (reescrito, ver Cambio 6) | Wizard unificado (`CLIENTES_UI.CMX` en `wizard_ui.html`) | Sí | Sí (34 cols, va a `<procesados>/CSV`, no a `FOLDER_CSV_ID`) | Sí | Sí | Sí |
-| **CEN** | Solo un volcado de JSON crudo a una hoja de pruebas (`procesarArchivosCEN_Prueba`), no sigue el contrato `preAnalizar/guardarDefinitivo` | No existe | No | No | No | **No** (se sacó de `CONFIG.CLIENTES`) | No |
+| **CEN** | Completo y en producción (ver Cambio 9). Multicliente: un archivo trae órdenes de varios clientes finales | Wizard unificado (`CLIENTES_UI.CEN`) + pantalla extra de selección de cliente detectado | Sí | Sí (16 cols, mismo esquema que MEDIPIEL) | Sí | Sí (con `MAPEO_CLIENTES`) | Sí |
 | **BELLA_PIEL** | No existe | No existe | — | — | — | **No** (se sacó de `CONFIG.CLIENTES`) | No |
 | **FARMATODO** | No existe | Solo stub visual | — | — | — | No (nunca tuvo entrada) | Sí (el botón no crashea gracias al guard en `contarArchivosPendientes`) |
 
@@ -128,6 +130,25 @@ Se agregó `obtenerInfoKamPorSolicitante_(solicitanteSap)` en `main.js` (mismo l
 
 Pendiente (no es código, es decisión de negocio): vaciar o archivar la hoja `Iniciales de agente` en el spreadsheet real, ahora que nada la lee.
 
+### 9. CEN implementado + auditoría de su motor (sesión 2026-09-01/02, 4 PRs mergeados)
+
+CEN dejó de ser el prototipo que describía este documento: una compañera lo implementó completo (motor + entrada en `CONFIG.CLIENTES` con `MAPEO_CLIENTES` + registro en `CLIENTES_UI` + tarjeta en el dashboard) y entró a pruebas funcionando. Se le hizo una auditoría comparándolo contra `medipiel_motor.js` (referencia correcta) y contra los antipatrones ya documentados de CMX, verificando cada hallazgo contra el spreadsheet real y contra 3 archivos reales del portal (`Example CEN/`, fuera del repo por `.gitignore`).
+
+**Lo que CEN ya hacía bien** (mejor que CMX, a la altura de MEDIPIEL): resolución correcta del KAM; reutiliza `obtenerMapaBodegaGeneral_` compartido (fechas de vencimiento sí funcionan); consecutivo de `Id` por pedido y no por lote; `Num pedido cliente` del CSV lleva la OC real del cliente; y la lógica multicliente en sí (identificación por fila, correo por cliente detectado, precio según la lista de cada uno) está bien resuelta — no es un caso de "debería copiar a MEDIPIEL", es una adaptación genuina a un problema que los otros dos clientes no tienen.
+
+**Los 4 fallos corregidos** (un PR por fallo, todos mergeados):
+
+1. **Comprador no mapeado generaba datos SAP inventados**: el fallback de `cen_identificarClienteInterno_` devolvía `solicitante: "11000000"` (SAP ID inexistente) y `listaPrecios: "MEDIPIEL BEAUTYCALIA"` (precios de otro cliente), en silencio. Ahora devuelve `null` y el comprador se reporta en `errores`. De paso se corrigió el alias de COLSUBSIDIO, que era `"Distribuidor"` (el valor de `LISTA_PRECIOS` copiado por error): ese cliente, pese a tener entrada en `MAPEO_CLIENTES`, **siempre caía al fallback**.
+2. **Se movían archivos de pedidos no inyectados**: el bucle recorría todo `paquete.pedidos` sin filtrar por `totalUnidades > 0`. Se agregó el set `pedidosValidos` (mismo patrón que MEDIPIEL).
+3. **Faltaba el fallback de Drive API avanzada** al mover/renombrar (`Drive.Files.patch` + `supportsAllDrives` → `DriveApp.moveTo`), necesario en unidades compartidas.
+4. **CONSOLIDADO se leía/escribía por índice fijo**: el antiduplicados leía `dataCons[0]` como encabezado (la fila 1 es el título; los encabezados están en la fila 3) y la escritura usaba un array posicional literal. Ambos migrados a `medipiel_getHeaderMap_` / `medipiel_createRowArray_`, ya probados. Verificado que la fila resultante es idéntica a la anterior con el layout actual.
+
+**Decisión de diseño confirmada con el usuario**: `MAPEO_CLIENTES` se queda **hardcodeado en `main.js`**. Se evaluó y se descartó moverlo a una hoja editable (`CEN_Clientes`) con autoregistro de compradores pendientes — facturación prefiere el control explícito de qué cliente entra, aunque eso implique un despliegue por cliente nuevo. La rama con esa implementación (`feat/cen-clientes-en-hoja`) quedó sin mergear.
+
+**Pendiente**: `Comfandi` y `Distribuciones Axa S.A.` aparecen como compradores en los 3 archivos reales pero **no están en `MAPEO_CLIENTES`**. Antes pasaban colados con el SAP ID inventado; tras el fix 1 sus órdenes se reportan como error y se saltan. Sus SAP ID reales ya existen en `Asignacion_KAM` (11033303 y 11045975, ambos lista `"Distribuidor"`) y hay una rama lista (`fix/cen-agregar-comfandi-axa`), **sin mergear a la espera de validación con el equipo de Colombia**.
+
+**Hallazgo abierto de CEN** (no corregido, es decisión de negocio): CEN nunca lanza `MISSING_BODEGA`. Cuando el destino no matchea `Destinatarios`, cae en silencio a `ciudad: "COTA"` sin avisar a facturación. Falta confirmar si eso es aceptable.
+
 ### 6. Lista de precios por cliente + reescritura completa del motor CMX
 
 Cambio hecho por el usuario (`cmx_motor.js` reescrito de punta a punta + `LISTA_PRECIOS` en `main.js`), evaluado y verificado en esta sesión.
@@ -186,10 +207,11 @@ Existe `.claude/agents/orderhub-replicator.md` (modelo Fable): especialista en m
 1. **Lógica duplicada entre `medipiel_motor.js` y `cmx_motor.js`** (actualizado tras el Cambio 6, que cambió *qué* está duplicado): `normalizeKey_` (idéntica salvo el orden de los `replace`), la lectura de `Productos`, la lectura de `Bodega`, `guardarNuevoDestinatario`, y **el HTML del correo al KAM** (~90 líneas casi iguales, con los mismos estilos inline y el mismo formateo de $ COP). Candidatos claros a un `utils.js` compartido. **No se ha hecho todavía.** Ojo: hoy las dos copias de cada cosa *no son equivalentes* — la de MEDIPIEL acierta y la de CMX no (deudas 13, 15), así que unificar es también la vía de arreglo. ~~La búsqueda del KAM en `Asignacion_KAM` + `Iniciales de agente`~~ **ya no está duplicada**: se unificó en `obtenerInfoKamPorSolicitante_` (main.js), ver "Cambio 8".
 2. ~~**UI duplicada**: `cmx_ui.html` y `medipiel_ui.html` comparten ~700 líneas casi idénticas.~~ **RESUELTO** en el Cambio 4 (wizard unificado; ambos archivos eliminados).
 3. ~~**`cmx_ui.html` es código muerto** + copia inline divergente en `index.html`.~~ **RESUELTO** en el Cambio 4 (se borró `cmx_ui.html` y se eliminó todo el bloque inline de CMX de `index.html`).
-4. **`cen_motor.js` quedó con una referencia rota**: `procesarArchivosCEN_Prueba` sigue leyendo `CONFIG.CLIENTES["CEN"]`, que ya no existe (se quitó de `main.js` a pedido del usuario). No está enlazada a ningún botón del dashboard, así que no afecta el flujo real, pero lanzará error si alguien la ejecuta manualmente desde el editor.
+4. ~~**`cen_motor.js` quedó con una referencia rota**: `procesarArchivosCEN_Prueba` sigue leyendo `CONFIG.CLIENTES["CEN"]`, que ya no existe.~~ **OBSOLETO**: `CONFIG.CLIENTES["CEN"]` volvió a existir (CEN es un cliente completo, ver Cambio 9) y el motor se reescribió; esa función de prueba ya no está.
 5. **`cabecera.fechaEntrega` de CMX siempre llega vacía** — y no es arreglable leyendo mejor el archivo: **ninguna de las dos plantillas reales de CMX trae fecha de entrega**, el dato no existe en el origen (habría que pedírselo al cliente). La UI aplica su default de "+7 días". El Cambio 6 además volvió a quitar la búsqueda del rótulo: `cmx_extraerDatosHeuristico_` declara `fechaEntrega` y no la asigna nunca.
 6. **Farmatodo** no tiene motor ni entrada en `CONFIG.CLIENTES`; el botón del dashboard existe pero no hace nada real todavía.
 7. **CSV**: solo escapa `;` y `"`; no neutraliza fórmulas (`=`, `+`, `-`, `@`) si el archivo se llegara a abrir en Excel.
+7b. **Zona horaria inconsistente** (detectado al escribir el README, sin verificar impacto real): `appsscript.json` declara `"timeZone": "Europe/Madrid"` — el default de ISDIN como empresa española — mientras varios puntos de los motores formatean fechas con el literal `"GMT-5"`. Conviven las dos: `Session.getScriptTimeZone()` devuelve Madrid (usado, entre otros, en la fecha de pedido por defecto de CEN y CMX) y `Utilities.formatDate(..., "GMT-5", ...)` fuerza Colombia (usado en nombres de archivo y otros defaults). Entre las 00:00 y las ~07:00 de Colombia las dos difieren en un día. Habría que unificar a `America/Bogota` en `appsscript.json` y quitar los `"GMT-5"` literales, pero **hay que medir antes qué fechas ya escritas en CONSOLIDADO quedaron con qué criterio**.
 8. **IDs de item no colisión-seguros en MEDIPIEL**: `Item_ID: Math.random().toString(36)...` en vez de `Utilities.getUuid()`. CMX ya no lo tiene (usa `<OC>_<n>`, determinista).
 9. **La hoja `Listado clientes` no existe** en el spreadsheet (`1L5bxc9IX…`). Sus hojas reales son: CONSOLIDADO, Tabla dinámica 6, ZSD_168, CUTIS, BELLA PIEL, CIRUDERMA, Iniciales de agente, Destinatarios, Asignacion_KAM, Bodega, Productos, CSV_APP, Prueba1, PRUEBAS_CEN_RAW, prompt csv, CLIENTES CEN. `guardarDefinitivoMEDIPIEL` sigue haciendo `getSheetByName("Listado clientes")` → `null` → `diccCiudades` queda vacío, **pero la columna `Ciudad` no sale vacía** (corrección de lo que decía antes esta nota): el fallback `p.Ciudad` viene de `Destinatarios` y sí funciona (las filas reales del CONSOLIDADO tienen MEDELLÍN / BOGOTÁ / SABANETA). Es una lectura muerta, no un bug de dato. En CMX el equivalente muerto es **`cmx_getCiudadParaCliente_`**, que además no se llama desde ningún lado.
 10. **Datos maestros incompletos para CMX**: `Productos` tiene ~146 productos (una fila por lista de precios) y `Bodega` 304 EAN; CMX pide ~132 SKU ISDIN. El conteo de "faltantes" de esta nota (12 de 77 y 5 de 34) se midió con el motor del Cambio 5 y **ya no aplica**: con el motor del Cambio 6 el piso son 21 de 77 en `SC 911` (ver deuda 14).

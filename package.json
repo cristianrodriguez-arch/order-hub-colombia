@@ -1,14 +1,14 @@
 {
-  "name": "poautomate_proyect",
+  "name": "order-hub-colombia",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Order Hub ISDIN Colombia - automatizacion de ordenes de compra a SAP (Google Apps Script). Uso interno.",
+  "private": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open-script"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "type": "commonjs",
   "dependencies": {
     "@google/clasp": "^3.3.0"
