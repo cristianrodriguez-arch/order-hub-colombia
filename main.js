@@ -123,6 +123,18 @@ const CONFIG = {
           LISTA_PRECIOS: "Copidrogas",
           aliases: ["Coopidrogas"]
         },
+        "COMFANDI": {
+          NOMBRE_CLIENTE: "CAJA COMP FAMILIAR COMFANDI",
+          SOLICITANTE: "11033303",
+          LISTA_PRECIOS: "Distribuidor",
+          aliases: ["Comfandi"]
+        },
+        "AXA": {
+          NOMBRE_CLIENTE: "DISTRIBUCIONES AXA S.A.S.",
+          SOLICITANTE: "11045975",
+          LISTA_PRECIOS: "Distribuidor",
+          aliases: ["Distribuciones Axa S.A."]
+        },
       }
     }
   }
