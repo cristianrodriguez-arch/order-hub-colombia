@@ -394,6 +394,7 @@ function guardarDefinitivoCEN(paquete) {
     const filasCSV = [];
     let contadorPedidoCSV = 1;
     let primerConsecutivo = "";
+    const pedidosValidos = new Set(); // Pedido_ID que sí quedaron inyectados en CONSOLIDADO
 
     const pedidosPorCliente = {};
     paquete.pedidos.forEach(p => {
@@ -455,6 +456,7 @@ function guardarDefinitivoCEN(paquete) {
         });
 
         if (totalUnidades > 0) {
+          pedidosValidos.add(p.Pedido_ID);
           maxConsecutive++;
           const consecutivoStr = String(maxConsecutive).padStart(4, "0");
           const idGenerado = prefix + consecutivoStr;
@@ -499,7 +501,9 @@ function guardarDefinitivoCEN(paquete) {
       const archivosProcesadosMap = {};
 
       paquete.pedidos.forEach(p => {
-        if (p.Archivo_Id) {
+        // Solo se mueve el archivo si el pedido efectivamente quedó registrado en CONSOLIDADO
+        // (evita que una OC sin ítems válidos desaparezca de la carpeta de pendientes sin rastro).
+        if (p.Archivo_Id && pedidosValidos.has(p.Pedido_ID)) {
           archivosProcesadosMap[p.Archivo_Id] = {
             clienteNombre: p.Cliente_Nombre || "CLIENTE_CEN",
             fechaPedido: p.Fecha_Pedido || Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")
