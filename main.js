@@ -3,16 +3,16 @@
  * PROYECTO: ORDER HUB - ISDIN COLOMBIA
  * MÓDULO: CONFIGURACIÓN CENTRALIZADA Y CONTROLADOR DE VISTAS (COLOMBIA)
  * ARCHIVO: main.gs
- * ESTADO: PRODUCCIÓN - CON DOBLE INDEXACIÓN DE DESTINATARIOS
+ * ESTADO: PRODUCCIÓN - CON ASIGNACIÓN DINÁMICA DE KAM CENTRALIZADA (SINGLE SOURCE OF TRUTH)
  * =========================================================================================
  * 📝 DESCRIPCIÓN TÉCNICA:
- * Centraliza configuraciones, parámetros de SAP y utilidades globales.
- * Incluye la doble indexación (por Cruce_cliente y por Id_destino) en Destinatarios
- * para garantizar la correcta extracción de la ciudad (ej: LA ESTRELLA).
+ * Centraliza configuraciones, parámetros de SAP, rutas de Google Drive y utilidades globales.
+ * Incluye la función central `obtenerInfoKamPorSolicitante_()` que lee dinámicamente
+ * la pestaña `Asignacion_KAM` para proveer nombre, iniciales y correo electrónico a todos
+ * los módulos (Medipiel, CMX, CEN).
  * =========================================================================================
  */
 
-/* STREAMING_CHUNK: Definiendo la cabecera oficial del Consolidado... */
 const CONSOLIDADO_HEADERS = [
   "Id", 
   "Orden De Compra", 
@@ -30,7 +30,6 @@ const CONSOLIDADO_HEADERS = [
   "KAM"
 ];
 
-/* STREAMING_CHUNK: Inicializando el objeto de configuración global CONFIG... */
 const CONFIG = {
   SPREADSHEET_ID: "1L5bxc9IXtBNUxYG54rBTESC3vkBO5HXNxV2L7vz02u8",
   SHEET_PEDIDOS: "CONSOLIDADO",
@@ -72,7 +71,7 @@ const CONFIG = {
       }
     },
     "CEN": {
-      FOLDER_ID: "1hCjs2bI3YvvmcqIOh-NufG9CCh2Zx3RF", 
+      FOLDER_ID: "1hCjs2bI3YvvmcqIOh-NufG9CCh2Zx3RF", // ID real de la carpeta CEN_sin_procesar
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       FILE_QUERY: "mimeType contains 'spreadsheet' or mimeType contains 'excel'",
       SAP: {
@@ -93,10 +92,6 @@ const CONFIG = {
           NOMBRE_CLIENTE: "CAJA COLOMBIANA DE SUBSIDIO FAMILIA",
           SOLICITANTE: "11026688",
           LISTA_PRECIOS: "Distribuidor",
-          // El alias anterior ("Distribuidor") era el valor de LISTA_PRECIOS copiado por error:
-          // nunca coincidía con el comprador real "Colsubsidio" (verificado contra un archivo CEN
-          // real) y de paso habría capturado cualquier futuro comprador que contuviera la palabra
-          // "Distribuidor" en su razón social.
           aliases: ["Colsubsidio"]
         },
         "OLIMPICA": {
@@ -123,12 +118,23 @@ const CONFIG = {
           LISTA_PRECIOS: "Copidrogas",
           aliases: ["Coopidrogas"]
         },
+        "COMFANDI":{
+         NOMBRE_CLIENTE: "CAJA COMP FAMILIAR COMFANDI",
+          SOLICITANTE: "11033303",
+          LISTA_PRECIOS: "Distribuidor",
+          aliases: ["Comfandi"] 
+        },
+        "LOCATEL":{
+         NOMBRE_CLIENTE: "BRECCIA SALUD S A S",
+          SOLICITANTE: "11027358",
+          LISTA_PRECIOS: "Distribuidor",
+          aliases: ["Breccia Salud S A S"] 
+        }
       }
     }
   }
 };
 
-/* STREAMING_CHUNK: Métodos para renderizado de la aplicación web... */
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
@@ -150,44 +156,96 @@ function abrirInterfaz() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Order Hub Colombia');
 }
 
+/**
+ * Consulta la información del KAM asignado a un solicitante SAP en la hoja Asignacion_KAM.
+ * Fuente única de verdad para iniciales, nombre y correo electrónico corporativo.
+ *
+ * @param {String|Number} solicitanteSap ID de SAP del cliente.
+ * @return {Object|null} Objeto con { nombre, iniciales, correo } o null si no se encuentra.
+ */
+function obtenerInfoKamPorSolicitante_(solicitanteSap) {
+  if (!solicitanteSap) return null;
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const shAsig = ss.getSheetByName("Asignacion_KAM");
+    if (!shAsig || shAsig.getLastRow() < 2) return null;
+
+    const data = shAsig.getDataRange().getValues();
+    const headers = data[0].map(h => String(h).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase().trim());
+    
+    const colSap = headers.findIndex(h => h.includes("SAP") || h.includes("ID") || h.includes("SOLICITANTE"));
+    const colKam = headers.findIndex(h => h.includes("KAM") || h.includes("ENCARGADO") || h.includes("NOMBRE") || h.includes("RESPONSABLE"));
+    const colMail = headers.findIndex(h => h.includes("CORREO") || h.includes("EMAIL") || h.includes("MAIL"));
+    const colInic = headers.findIndex(h => h.includes("INICIAL") || h.includes("AGENTE") || h.includes("CODIGO"));
+
+    const targetSap = String(solicitanteSap).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase().trim();
+
+    for (let i = 1; i < data.length; i++) {
+      const sapVal = colSap !== -1 ? String(data[i][colSap]).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase().trim() : "";
+      if (sapVal === targetSap) {
+        return {
+          nombre: colKam !== -1 ? String(data[i][colKam]).trim() : "KAM ISDIN",
+          iniciales: colInic !== -1 ? String(data[i][colInic]).trim().toUpperCase() : "MC",
+          correo: colMail !== -1 ? String(data[i][colMail]).trim() : ""
+        };
+      }
+    }
+  } catch (err) {
+    console.error("Error en obtenerInfoKamPorSolicitante_: " + err.message);
+  }
+  return null;
+}
+
 function contarArchivosPendientes(cliente) {
   const cache = CacheService.getScriptCache();
   const cacheKey = "pendientes_" + cliente;
-  const cachedCount = cache.get(cacheKey);
-
-  if (cachedCount !== null) return parseInt(cachedCount);
 
   const configCli = CONFIG.CLIENTES[cliente];
-  if (!configCli) return 0;
+  if (!configCli || !configCli.FOLDER_ID) return 0;
 
-  const folder = DriveApp.getFolderById(configCli.FOLDER_ID);
-  const files = obtenerArchivosCliente_(folder, configCli);
+  try {
+    const folder = DriveApp.getFolderById(configCli.FOLDER_ID);
+    const files = obtenerArchivosCliente_(folder, configCli);
 
-  let count = 0;
-  while (files.hasNext()) {
-    files.next();
-    count++;
+    let count = 0;
+    while (files.hasNext()) {
+      const file = files.next();
+      
+      // 1. Descartar archivos que estén en la papelera
+      if (file.isTrashed()) continue;
+
+      const name = file.getName().toLowerCase();
+
+      // 2. Descartar archivos temporales generados por pruebas previas
+      if (name.includes("_temp")) continue;
+
+      // 3. Para CEN y CMX, validar estrictamente que sea un Excel válido
+      if (cliente === "CEN" || cliente === "CMX") {
+        if (!name.endsWith(".xlsx") && !name.endsWith(".xlsm") && !name.endsWith(".xls")) {
+          continue;
+        }
+      }
+
+      count++;
+    }
+
+    cache.put(cacheKey, count.toString(), 60); // Refresco dinámico cada 60s
+    return count;
+  } catch (err) {
+    console.error("Error contando pendientes de " + cliente + ": " + err.message);
+    return 0;
   }
-
-  cache.put(cacheKey, count.toString(), 600);
-  return count;
 }
 
 function obtenerArchivosCliente_(folder, configCli) {
   if (configCli.FILE_QUERY) {
-    return folder.searchFiles(configCli.FILE_QUERY);
+    // Filtro Poka-Yoke: Asegurar que nunca busque archivos en la papelera
+    const query = "(" + configCli.FILE_QUERY + ") and trashed = false";
+    return folder.searchFiles(query);
   }
   return folder.getFilesByType(configCli.MIME_TYPE || MimeType.PDF);
 }
 
-/* STREAMING_CHUNK: Creando el diccionario de Destinatarios con doble indexación (Cruce_cliente e Id_destino)... */
-/**
- * Lee la hoja de Destinatarios e indexa por Cruce_cliente e Id_destino.
- * De esta manera, si la búsqueda se hace por "BODEGA_CMX_PRINCIPAL" o por "11033482",
- * retornará de inmediato la ciudad correcta (ej: LA ESTRELLA).
- * 
- * @return {Object} Diccionario mapeado por Cruce_cliente e Id_destino.
- */
 function obtenerDiccionarioDestinatarios() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sh = ss.getSheetByName(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
@@ -220,60 +278,15 @@ function obtenerDiccionarioDestinatarios() {
       ciudad: ciudadVal
     };
 
-    // Doble indexación para garantizar la coincidencia sin importar cuál clave use el motor
     if (cruce) dicc[cruce] = objInfo;
     if (idDestino) dicc[idDestino] = objInfo;
   }
   return dicc;
 }
 
-/* STREAMING_CHUNK: Fuente única del KAM asignado por cliente (Asignacion_KAM)... */
-/**
- * Lee Asignacion_KAM y devuelve el KAM asignado a un SAP ID (Solicitante).
- * Única fuente de verdad para nombre/iniciales/correo del KAM: antes cada motor
- * (MEDIPIEL, CMX, CEN) tenía su propia lectura de Asignacion_KAM y/o de
- * "Iniciales de agente" (con resultados distintos para el mismo KAM).
- *
- * @param {String|Number} solicitanteSap SAP ID del cliente (columna "SAP ID").
- * @return {Object|null} { nombre, iniciales, correo }, o null si el solicitante no
- *   aparece en la hoja o no tiene KAM asignado (fila "SIN KAM", sin Correo/Iniciales).
- */
-function obtenerInfoKamPorSolicitante_(solicitanteSap) {
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  const sh = ss.getSheetByName("Asignacion_KAM");
-  if (!sh) return null;
-
-  const data = sh.getDataRange().getValues();
-  if (data.length < 2) return null;
-
-  const headers = data[0].map(h => String(h).trim().toUpperCase());
-  const colSap = headers.indexOf("SAP ID");
-  const colKam = headers.indexOf("KAM ENCARGADO");
-  const colCorreo = headers.indexOf("CORREO");
-  const colIniciales = headers.indexOf("INICIALES");
-
-  if (colSap === -1) return null;
-
-  const normSolicitante = String(solicitanteSap).trim();
-
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][colSap]).trim() === normSolicitante) {
-      const correo = colCorreo !== -1 ? String(data[i][colCorreo]).trim() : "";
-      const iniciales = colIniciales !== -1 ? String(data[i][colIniciales]).trim().toUpperCase() : "";
-      if (!correo && !iniciales) return null; // fila sin KAM asignado (ej. "SIN KAM")
-      return {
-        nombre: colKam !== -1 ? String(data[i][colKam]).trim() : "",
-        iniciales: iniciales,
-        correo: correo
-      };
-    }
-  }
-  return null;
-}
-
-/* STREAMING_CHUNK: Creando el mapa de existencias e inventario de Bodega... */
 function obtenerMapaBodegaGeneral_(sheet) {
   const map = {}; 
+  if (!sheet) return map;
   const data = sheet.getDataRange().getValues();
   if (data.length < 2) return map;
 

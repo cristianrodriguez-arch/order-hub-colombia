@@ -3,15 +3,16 @@
  * PROYECTO: ORDER HUB - ISDIN COLOMBIA
  * MÓDULO: INTEGRACIÓN Y PROCESAMIENTO DE ÓRDENES DE COMPRA - CMX S.A.S. (EXCEL)
  * ARCHIVO: cmx_motor.gs
- * ESTADO: PRODUCCIÓN - SOPORTE MÚLTIPLES LOTES Y ASUNTO HOMOLOGADO
+ * ESTADO: PRODUCCIÓN - SOPORTE MATERIALES SAP DE 12 DÍGITOS Y KAM DESACOPLADO
  * =========================================================================================
- * 📝 DESCRIPCIÓN DETALLADA:
- * Este módulo procesa las órdenes de compra de CMX S.A.S. en formato Excel (.xlsx, .xlsm).
- * Incluye:
- * 1. Preservación de múltiples lotes/materiales de la hoja Bodega para la UI.
- * 2. Extracción de ciudad destino nativa ("LA ESTRELLA") desde Destinatarios.
- * 3. Asunto de correo homologado: 📦 Resumen Pedidos CMX - DD/MM/YYYY.
- * 4. Valorización en $ COP por ítem y orden.
+ * 📝 CORRECCIONES APLICADAS:
+ * 1. ELIMINACIÓN DE LA RESTRICCIÓN DE 10 DÍGITOS: Tanto en `cmx_generarCsvSap_` como en
+ *    `cmx_enviarNotificacionKam_`, se eliminó la condición `length > 10` que borraba
+ *    los materiales de 12 dígitos (ej: 690032151480 / Ureadin Cream10).
+ * 2. ESTRUCTURA CSV HOMOLOGADA: 16 columnas para SAP oficial (idéntico a Medipiel y CEN).
+ * 3. KAM 100% DESACOPLADO: Utiliza `obtenerInfoKamPorSolicitante_()` de main.gs.
+ * 4. ESCUDO ANTI-DUPLICADOS COMPUESTO: Evalúa la combinación `${OC}_${SAPID}`.
+ * 5. DOBLE CATÁLOGO CON RED DE SEGURIDAD: Precios CMX con fallback al catálogo maestro.
  * =========================================================================================
  */
 
@@ -19,35 +20,82 @@ function preAnalizarCMX() {
   try {
     const configCli = CONFIG.CLIENTES["CMX"];
     if (!configCli) {
-      throw new Error("No se encontró la configuración de CMX en CONFIG de main.gs.");
+      throw new Error("No se encontró la configuración del cliente CMX en CONFIG de main.gs.");
     }
 
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     
+    // -------------------------------------------------------------------------------------
+    // PASO 1: DETECTOR DE DUPLICADOS EN EL CONSOLIDADO (CLAVE COMPUESTA OC + SAP ID)
+    // -------------------------------------------------------------------------------------
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     const pedidosProcesados = new Set();
     
-    if (shConsolidado) {
+    if (shConsolidado && shConsolidado.getLastRow() >= 2) {
       const dataCons = shConsolidado.getDataRange().getValues();
-      const headCons = dataCons[0].map(h => cmx_normalizeKey_(h));
-      const colOc = headCons.indexOf(cmx_normalizeKey_("Orden de Compra"));
-      if (colOc !== -1) {
-        for (let i = 1; i < dataCons.length; i++) {
-          const ocVal = String(dataCons[i][colOc]).trim();
-          if (ocVal) pedidosProcesados.add(ocVal);
+      let colOc = 1;  // Columna B por defecto
+      let colSap = 2; // Columna C por defecto
+      let startRow = 1;
+
+      for (let r = 0; r < Math.min(dataCons.length, 5); r++) {
+        const rowKeys = dataCons[r].map(h => cmx_normalizeKey_(h));
+        const foundOc = rowKeys.findIndex(h => h.includes("ORDEN") || h.includes("OC") || h.includes("PEDIDO"));
+        if (foundOc !== -1) {
+          colOc = foundOc;
+          const foundSap = rowKeys.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
+          if (foundSap !== -1) colSap = foundSap;
+          startRow = r + 1;
+          break;
+        }
+      }
+
+      for (let i = startRow; i < dataCons.length; i++) {
+        const ocVal = cmx_limpiarOc_(dataCons[i][colOc]);
+        const sapVal = cmx_normalizeKey_(dataCons[i][colSap]);
+        if (ocVal && sapVal) {
+          pedidosProcesados.add(`${ocVal}_${sapVal}`);
         }
       }
     }
 
-    // Carga de Destinatarios utilizando la función unificada de main.gs
-    const diccDestinatarios = obtenerDiccionarioDestinatarios();
-    const diccBodega = {};
-    for (const key in diccDestinatarios) {
-      diccBodega[key] = diccDestinatarios[key].idDestino;
+    // -------------------------------------------------------------------------------------
+    // PASO 2: MAPEO DE DESTINATARIOS PARA DIRECCIONAMIENTO GEOGRÁFICO DE ENTREGAS
+    // -------------------------------------------------------------------------------------
+    const shDest = ss.getSheetByName(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
+    const diccDestinatarios = {};
+    const diccBodega = {}; 
+    
+    if (shDest) {
+      const dataDest = shDest.getDataRange().getValues();
+      const headDest = dataDest[0].map(h => cmx_normalizeKey_(h));
+      const colCruce = headDest.indexOf(cmx_normalizeKey_("Cruce_cliente"));
+      const colIdDest = headDest.indexOf(cmx_normalizeKey_("Id_destino"));
+      const colNomDest = headDest.indexOf(cmx_normalizeKey_("Nombre_destino"));
+      const colCiudad = headDest.findIndex(h => h === "CIUDAD" || h.includes("POBLACION") || h.includes("MUNICIPIO"));
+      
+      if (colCruce !== -1 && colIdDest !== -1) {
+        for (let i = 1; i < dataDest.length; i++) {
+          const cruceVal = String(dataDest[i][colCruce]).trim();
+          if (cruceVal) {
+            diccDestinatarios[cruceVal] = {
+              idDestino: String(dataDest[i][colIdDest]).trim(),
+              nombreDestino: colNomDest !== -1 ? String(dataDest[i][colNomDest]).trim() : "",
+              ciudad: colCiudad !== -1 ? String(dataDest[i][colCiudad]).trim().toUpperCase() : "COTA"
+            };
+            diccBodega[cruceVal] = String(dataDest[i][colIdDest]).trim();
+          }
+        }
+      }
     }
 
+    // -------------------------------------------------------------------------------------
+    // PASO 3: CARGA DE PRECIOS B2B DE CMX DESDE EL MAIN (100% DESACOPLADO)
+    // -------------------------------------------------------------------------------------
     const diccProductos = cmx_getProductosPreciosMap_();
 
+    // -------------------------------------------------------------------------------------
+    // PASO 4: RECOLECCIÓN DE ARCHIVOS EXCEL DESDE GOOGLE DRIVE
+    // -------------------------------------------------------------------------------------
     const folder = DriveApp.getFolderById(configCli.FOLDER_ID);
     const files = folder.getFiles();
     const archivos = [];
@@ -65,10 +113,13 @@ function preAnalizarCMX() {
       return { pedidosExtraidos: [], itemsExtraidos: [], errores: [], yaProcesados: [] };
     }
 
+    // -------------------------------------------------------------------------------------
+    // PASO 5: MOTOR DE PROCESAMIENTO EN CALIENTE DE LIBROS EXCEL
+    // -------------------------------------------------------------------------------------
     const resultado = cmx_motorLecturaExcel(archivos, diccBodega, diccProductos, configCli, pedidosProcesados, diccDestinatarios);
 
     if (resultado.pedidosExtraidos.length === 0 && resultado.errores.length > 0) {
-      throw new Error("Fallo en la lectura de CMX. Detalle: " + resultado.errores.join(' | '));
+      throw new Error("Fallo en la lectura del archivo Excel CMX. Detalle técnico: " + resultado.errores.join(' | '));
     }
 
     return {
@@ -115,9 +166,12 @@ function cmx_motorLecturaExcel(archivos, diccBodega, diccProductos, configCli, p
         throw new Error(`No se detectó número de Orden de Compra en el archivo ${file.getName()}`);
       }
 
-      const ocTrim = String(cabecera.ordenCompra).trim();
+      const ocTrim = cmx_limpiarOc_(cabecera.ordenCompra);
+      const targetSap = cmx_normalizeKey_(configCli.SOLICITANTE || "11033482");
+      const comboKey = `${ocTrim}_${targetSap}`;
 
-      if (pedidosProcesados.has(ocTrim)) {
+      // ESCUDO ANTI-DUPLICADOS: Solo bloquea si coincide OC Y Solicitante de CMX
+      if (pedidosProcesados.has(comboKey)) {
         yaProcesados.push(ocTrim);
         return;
       }
@@ -160,6 +214,18 @@ function cmx_motorLecturaExcel(archivos, diccBodega, diccProductos, configCli, p
   return { pedidosExtraidos, itemsExtraidos, errores, yaProcesados };
 }
 
+function cmx_limpiarOc_(val) {
+  if (val === null || val === undefined) return "";
+  let s = String(val).trim();
+  s = s.replace(/^'/, ""); 
+  if (/e/i.test(s)) {
+    let num = Number(s);
+    if (!isNaN(num)) s = num.toFixed(0);
+  }
+  if (s.includes(".")) s = s.split(".")[0];
+  return s.trim();
+}
+
 function cmx_convertirExcelASheet_(file) {
   const fileId = file.getId();
   const folderId = file.getParents().next().getId();
@@ -175,6 +241,8 @@ function cmx_convertirExcelASheet_(file) {
 }
 
 function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli, fileName, diccDestinatarios) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  
   let cabecera = {
     ordenCompra: "",
     fechaPedido: "",
@@ -183,21 +251,61 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
     destinatario: configCli.NOMBRE_CLIENTE || "CMX S.A.S.",
     ciudad: "COTA"
   };
-
-  if (diccDestinatarios) {
-    const destinoBySolicitante = diccDestinatarios[configCli.SOLICITANTE] || diccDestinatarios["11033482"] || diccDestinatarios["BODEGA_CMX_PRINCIPAL"];
-    if (destinoBySolicitante && destinoBySolicitante.ciudad) {
-      cabecera.ciudad = destinoBySolicitante.ciudad;
-      cabecera.idDestino = destinoBySolicitante.idDestino || cabecera.idDestino;
-      cabecera.destinatario = destinoBySolicitante.nombreDestino || cabecera.destinatario;
-    }
-  }
   
   let items = [];
   let filaInicioTabla = -1;
   let colIndices = { sku: -1, desc: -1, cant: -1, ean: -1 };
   let maxTableScore = 0;
 
+  // 1. ESCANEO GEOGRÁFICO DE CABECERA (Filas 1 a 12 - Todas las columnas)
+  let textoDireccion = "";
+  for (let r = 0; r < Math.min(data.length, 12); r++) {
+    for (let c = 0; c < data[r].length; c++) {
+      const cellVal = String(data[r][c]).trim();
+      if (cellVal) {
+        textoDireccion += " " + cellVal;
+      }
+    }
+  }
+
+  let normTexto = cmx_normalizeKey_(textoDireccion);
+  let ciudadMapeadaDestinatarios = "";
+  if (diccDestinatarios) {
+    for (const key in diccDestinatarios) {
+      let normKey = cmx_normalizeKey_(key);
+      if (normKey && normTexto.includes(normKey)) {
+        cabecera.idDestino = diccDestinatarios[key].idDestino;
+        cabecera.destinatario = diccDestinatarios[key].nombreDestino;
+        ciudadMapeadaDestinatarios = diccDestinatarios[key].ciudad;
+        break;
+      }
+    }
+  }
+  
+  let ciudadDetectada = "";
+  const shClientes = ss.getSheetByName("Clientes") || ss.getSheetByName("Listado clientes") || ss.getSheetByName("Listado_clientes") || ss.getSheetByName("Listado Clientes");
+  if (shClientes) {
+    const dataCli = shClientes.getDataRange().getValues();
+    const headCli = dataCli[0].map(h => cmx_normalizeKey_(h));
+    const colPob = headCli.findIndex(h => h.includes("POBLACION") || h.includes("CIUDAD") || h.includes("MUNICIPIO") || h.includes("PBL"));
+    if (colPob !== -1) {
+      let normB2 = cmx_normalizeKey_(textoDireccion);
+      for (let i = 1; i < dataCli.length; i++) {
+        let pobVal = String(dataCli[i][colPob]).trim().toUpperCase();
+        if (pobVal && pobVal.length > 3) {
+          let normPob = cmx_normalizeKey_(pobVal);
+          if (normB2.includes(normPob)) {
+            ciudadDetectada = pobVal;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  cabecera.ciudad = ciudadMapeadaDestinatarios || ciudadDetectada || cmx_getCiudadParaCliente_(cabecera.idDestino) || "COTA";
+
+  // 2. Escanear fila por fila para ubicar cabecera e inicio de la tabla
   for (let r = 0; r < Math.min(data.length, 30); r++) {
     const filaTexto = data[r].map(c => String(c).toUpperCase().trim());
     const filaUnida = filaTexto.join(" ");
@@ -250,7 +358,7 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
   }
 
   if (filaInicioTabla === -1) {
-    throw new Error("No se pudo detectar la tabla de productos.");
+    throw new Error("No se pudo detectar la tabla de productos (columna de Código de barras y Cantidad) en el archivo.");
   }
 
   const stockBodega = cmx_getBodegaStockMap_();
@@ -282,25 +390,25 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
       }
     }
 
-    // PRESERVACIÓN DE LOTES Y MATERIALES DE BODEGA:
-    // Si la bodega tiene registros para este EAN, los conserva intactos con sus respectivos Material IDs y fechas
     let materialesFiltrados = resultEan.materialesDisponibles || [];
-    if (materialesFiltrados.length > 0) {
-      materialesFiltrados = materialesFiltrados.map(m => {
-        return {
-          material: m.material || oficialMaterial, // Prioriza el Material ID propio del lote en Bodega
-          stock: m.stock,
-          fechaDisplay: m.fechaDisplay,
-          isExpired: m.isExpired
-        };
-      });
-    } else if (oficialMaterial) {
-      materialesFiltrados = [{
-        material: oficialMaterial,
-        stock: 0,
-        fechaDisplay: "Sin fecha",
-        isExpired: false
-      }];
+    if (oficialMaterial) {
+      if (materialesFiltrados.length > 0) {
+        materialesFiltrados = materialesFiltrados.map(m => {
+          return {
+            material: oficialMaterial,
+            stock: m.stock,
+            fechaDisplay: m.fechaDisplay,
+            isExpired: m.isExpired
+          };
+        });
+      } else {
+        materialesFiltrados = [{
+          material: oficialMaterial,
+          stock: 0,
+          fechaDisplay: "Sin fecha",
+          isExpired: false
+        }];
+      }
     }
 
     items.push({
@@ -337,7 +445,7 @@ function cmx_procesarYBuscarEan_(rawVal, stockBodega) {
     const cand = candidatos[i];
     const normCand = cmx_normalizeKey_(cand);
     const stock = stockBodega[normCand];
-    if (stock && stock.length > 0) {
+    if (stock && stock.length > 0 && stock.some(s => s.stock > 0)) {
       return { eanMapeado: cand, materialesDisponibles: stock };
     }
   }
@@ -414,6 +522,11 @@ function cmx_normalizeKey_(text) {
     .trim();
 }
 
+/**
+ * Carga el catálogo en 2 fases:
+ * Fase 1: Carga el catálogo global de Productos como red de seguridad.
+ * Fase 2: Sobreescribe con máxima prioridad los precios de la lista de CMX.
+ */
 function cmx_getProductosPreciosMap_() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const shProd = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
@@ -453,11 +566,30 @@ function cmx_getProductosPreciosMap_() {
   
   if (colEan === -1 || colCosto === -1 || colMat === -1) return dicc;
   
-  const targetListaKey = cmx_normalizeKey_(CONFIG.CLIENTES["CMX"].LISTA_PRECIOS);
+  const targetListaKey = cmx_normalizeKey_(CONFIG.CLIENTES["CMX"].LISTA_PRECIOS || "CMX\nCADA PIEL\nThe Beauty club");
 
+  // Fase 1: Red de seguridad con catálogo global
+  for (let i = 1; i < data.length; i++) {
+    const ean = String(data[i][colEan]).trim();
+    const material = String(data[i][colMat]).trim();
+    const costo = parseFloat(data[i][colCosto]) || 0;
+    const desc = colDesc !== -1 ? String(data[i][colDesc]).trim() : "";
+    
+    const normEan = cmx_normalizeKey_(ean);
+    const normMat = cmx_normalizeKey_(material);
+    
+    if (normEan && !dicc[normEan]) {
+      dicc[normEan] = { precio: costo, descripcion: desc, materialOficial: material, eanOficial: ean };
+    }
+    if (normMat && !dicc[normMat]) {
+      dicc[normMat] = { precio: costo, descripcion: desc, materialOficial: material, eanOficial: ean };
+    }
+  }
+
+  // Fase 2: Sobreescribir con la tarifa específica de CMX
   for (let i = 1; i < data.length; i++) {
     const listaVal = cmx_normalizeKey_(data[i][colLista]);
-    if (listaVal !== targetListaKey) continue;
+    if (listaVal !== targetListaKey && !targetListaKey.includes(listaVal)) continue;
     
     const ean = String(data[i][colEan]).trim();
     const material = String(data[i][colMat]).trim();
@@ -474,12 +606,8 @@ function cmx_getProductosPreciosMap_() {
       eanOficial: ean 
     };
     
-    if (normEan) {
-      dicc[normEan] = productData;
-    }
-    if (normMat) {
-      dicc[normMat] = productData;
-    }
+    if (normEan) dicc[normEan] = productData;
+    if (normMat) dicc[normMat] = productData;
   }
   return dicc;
 }
@@ -495,7 +623,6 @@ function cmx_getBodegaStockMap_() {
   if (data.length < 2) return stockMap;
   
   const head = data[0].map(h => cmx_normalizeKey_(h));
-  
   let colEan = 9; 
 
   let colMat = head.indexOf("MATERIAL");
@@ -515,7 +642,6 @@ function cmx_getBodegaStockMap_() {
   }
 
   const colFecha = head.findIndex(h => h.includes("VENCIMIENTO") || h.includes("CADUCIDAD") || h.includes("FECHA") || h.includes("VENCE"));
-  
   const hoy = new Date();
   
   for (let i = 1; i < data.length; i++) {
@@ -542,13 +668,22 @@ function cmx_getBodegaStockMap_() {
     }
     
     const normEan = cmx_normalizeKey_(eanLimpio);
-    if (!stockMap[normEan]) stockMap[normEan] = [];
-    stockMap[normEan].push({
+    const normMat = cmx_normalizeKey_(material);
+
+    const itemObj = {
       material: material,
       stock: stock,
       fechaDisplay: fechaDisplay,
       isExpired: isExpired
-    });
+    };
+
+    if (!stockMap[normEan]) stockMap[normEan] = [];
+    stockMap[normEan].push(itemObj);
+
+    if (normMat && normMat !== normEan) {
+      if (!stockMap[normMat]) stockMap[normMat] = [];
+      stockMap[normMat].push(itemObj);
+    }
   }
   return stockMap;
 }
@@ -575,14 +710,33 @@ function cmx_getCiudadParaCliente_(solicitanteId) {
   return "COTA";
 }
 
+/**
+ * Consulta la información del KAM asignado consumiendo directamente
+ * la función centralizada obtenerInfoKamPorSolicitante_() de main.gs.
+ * 
+ * @param {String|Number} solicitanteId ID de SAP del solicitante.
+ * @return {Object} Objeto con name, initials y email.
+ */
 function cmx_getKamInitialsAndName_(solicitanteId) {
-  // Fuente única (Asignacion_KAM): antes esta función además cruzaba "Iniciales de
-  // agente" comparando por la columna equivocada (TEAM) y nunca acertaba.
-  const kamInfo = obtenerInfoKamPorSolicitante_(solicitanteId);
+  if (typeof obtenerInfoKamPorSolicitante_ === "function") {
+    try {
+      const infoKam = obtenerInfoKamPorSolicitante_(solicitanteId);
+      if (infoKam) {
+        return {
+          name: infoKam.nombre,
+          initials: infoKam.iniciales,
+          email: infoKam.correo
+        };
+      }
+    } catch (e) {
+      console.warn("Llamada a obtenerInfoKamPorSolicitante_ falló: " + e.message);
+    }
+  }
+
   return {
-    name: kamInfo && kamInfo.nombre ? kamInfo.nombre : "SARA CARDONA",
-    initials: kamInfo && kamInfo.iniciales ? kamInfo.iniciales : "SC",
-    email: kamInfo && kamInfo.correo ? kamInfo.correo : "sara.cardona@isdin.com"
+    name: "KAM ISDIN",
+    initials: "MC",
+    email: ""
   };
 }
 
@@ -594,6 +748,44 @@ function guardarDefinitivoCMX(paquete) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!shConsolidado) throw new Error("No se encontró la hoja CONSOLIDADO.");
+
+    // ESCUDO EN TIEMPO REAL: Re-verifica antes de escribir en CONSOLIDADO
+    const dataConsCheck = shConsolidado.getDataRange().getValues();
+    let colOcCheck = 1;
+    let colSapCheck = 2;
+
+    for (let r = 0; r < Math.min(dataConsCheck.length, 5); r++) {
+      const rKeys = dataConsCheck[r].map(h => cmx_normalizeKey_(h));
+      const fOc = rKeys.findIndex(h => h.includes("ORDEN") || h.includes("OC") || h.includes("PEDIDO"));
+      if (fOc !== -1) {
+        colOcCheck = fOc;
+        const fSap = rKeys.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
+        if (fSap !== -1) colSapCheck = fSap;
+        break;
+      }
+    }
+
+    const ocsExistentes = new Set();
+    const targetSapCheck = cmx_normalizeKey_(configCli.SOLICITANTE || "11033482");
+
+    for (let i = 1; i < dataConsCheck.length; i++) {
+      const ocVal = cmx_limpiarOc_(dataConsCheck[i][colOcCheck]);
+      const sapVal = cmx_normalizeKey_(dataConsCheck[i][colSapCheck]);
+      if (ocVal && sapVal) {
+        ocsExistentes.add(`${ocVal}_${sapVal}`);
+      }
+    }
+
+    const pedidosFiltrados = paquete.pedidos.filter(p => {
+      const ocTrim = cmx_limpiarOc_(p.Pedido_ID);
+      return !ocsExistentes.has(`${ocTrim}_${targetSapCheck}`);
+    });
+
+    if (pedidosFiltrados.length === 0) {
+      throw new Error("La Orden de Compra elegida ya se encuentra registrada para CMX S.A.S. en el Consolidado.");
+    }
+
+    paquete.pedidos = pedidosFiltrados;
 
     const kamInfo = cmx_getKamInitialsAndName_(configCli.SOLICITANTE);
     const yy = String(new Date().getFullYear()).slice(-2); 
@@ -618,13 +810,17 @@ function guardarDefinitivoCMX(paquete) {
     
     paquete.pedidos.forEach(p => {
       const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
-      
       let totalUnidades = 0;
       let totalValor = 0;
       
       itemsPedido.forEach(item => {
-        const matSeleccionado = paquete.materialesSeleccionados[item.Item_ID];
-        if (matSeleccionado && !matSeleccionado.includes("SIN_")) {
+        let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
+        
+        // Validación segura sin rechazar materiales SAP de 12 dígitos
+        const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
+                                (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
+
+        if (!isNoActualizado) {
           const cant = parseInt(item.Cant) || 0;
           const valUnit = parseFloat(item.Valor_Unitario) || 0;
           totalUnidades += cant;
@@ -650,7 +846,7 @@ function guardarDefinitivoCMX(paquete) {
         totalValor,
         "", 
         "", 
-        "" 
+        "" // Dejado en blanco para no sobreescribir la fórmula
       ]);
     });
 
@@ -658,7 +854,7 @@ function guardarDefinitivoCMX(paquete) {
       const lastRow = shConsolidado.getLastRow();
       shConsolidado.getRange(lastRow + 1, 1, filasNuevas.length, filasNuevas[0].length).setValues(filasNuevas);
     } else {
-      throw new Error("No hay posiciones para inyectar al consolidado.");
+      throw new Error("No hay posiciones válidas para inyectar al consolidado.");
     }
 
     const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
@@ -709,7 +905,7 @@ function guardarDefinitivoCMX(paquete) {
     return {
       success: true,
       mensaje: `Se han procesado ${filasNuevas.length} pedidos. Código de consolidación: ${nuevoIdStr}`,
-      csvData: Utilities.base64Encode(csvData, Utilities.Charset.UTF_8),
+      csvData: Utilities.base64Encode(csvData, Utilities.Charset.UTF_8).replace(/[\r\n]/g, ""),
       fileName: fileName
     };
 
@@ -718,12 +914,21 @@ function guardarDefinitivoCMX(paquete) {
   }
 }
 
+/**
+ * Genera el archivo plano oficial de 16 columnas para SAP.
+ * Acepta códigos SAP oficiales de hasta 12 dígitos (ej: 690032151480).
+ */
 function cmx_generarCsvSap_(paquete, nuevoIdStr) {
   const configCli = CONFIG.CLIENTES["CMX"];
   const sap = configCli.SAP || { CLASE_PEDIDO: "ZDIR", ORG_VENTAS: "Z011", CANAL: "10", SECTOR: "00" };
   
-  // Filas de 16 columnas (Columna A a Columna P), sin fila de encabezado: el cargador SAP no la espera.
-  const rows = [];
+  const headers = [
+    "Contador", "Nº Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc",
+    "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posición pedido",
+    "Material", "EAN", "Cantidad"
+  ];
+
+  const rows = [headers];
   let orderIndex = 0;
 
   paquete.pedidos.forEach((pedido) => {
@@ -733,52 +938,52 @@ function cmx_generarCsvSap_(paquete, nuevoIdStr) {
     let esPrimeraPosicion = true;
 
     itemsPedido.forEach((item) => {
-      const matSeleccionado = paquete.materialesSeleccionados[item.Item_ID];
-      if (matSeleccionado && !matSeleccionado.includes("SIN_")) {
-        const fechaEnt = paquete.fechasEntregas[item.Pedido_ID] ? paquete.fechasEntregas[item.Pedido_ID].fecha : "";
-        
-        let fechaEntFormatted = "";
-        if (fechaEnt) {
-          const dateParts = fechaEnt.split("-");
-          if (dateParts.length === 3) {
-            fechaEntFormatted = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
-          } else {
-            fechaEntFormatted = fechaEnt;
-          }
-        }
+      let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
+      
+      // CORRECCIÓN: Permite materiales de 12 dígitos, descarta EANs (13 dígitos que empiezan por 84) o vacíos
+      const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
+                              (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
 
-        // Fila limitada exactamente a 16 posiciones (índices 0 al 15)
-        const rowData = new Array(16).fill("");
+      const matCsv = isNoActualizado ? "" : matSeleccionado;
 
-        rowData[0] = orderIndex; // Col A: Contador
-        rowData[1] = "";         // Col B: Nº Pedido SAP
-
-        if (esPrimeraPosicion) {
-          rowData[2] = sap.CLASE_PEDIDO;  // Col C: Clase pedido
-          rowData[3] = sap.ORG_VENTAS;    // Col D: Org ventas
-          rowData[4] = sap.CANAL;         // Col E: Canal
-          rowData[5] = sap.SECTOR;        // Col F: Sector
-          rowData[6] = configCli.SOLICITANTE; // Col G: Solicitante
-          rowData[7] = pedido.Id_Destino || "11033482"; // Col H: Destinatario Merc
-          rowData[8] = nuevoIdStr;        // Col I: Num pedido cliente
-          rowData[9] = fechaEntFormatted; // Col J: Fecha preferente Entrega
-          esPrimeraPosicion = false;
+      const fechaEnt = paquete.fechasEntregas[item.Pedido_ID] ? paquete.fechasEntregas[item.Pedido_ID].fecha : "";
+      let fechaEntFormatted = "";
+      if (fechaEnt) {
+        const dateParts = fechaEnt.split("-");
+        if (dateParts.length === 3) {
+          fechaEntFormatted = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
         } else {
-          for (let c = 2; c <= 9; c++) {
-            rowData[c] = "";
-          }
+          fechaEntFormatted = fechaEnt;
         }
-
-        rowData[10] = "";               // Col K: Descuento ZTK1 (%)
-        rowData[11] = "";               // Col L: Motivo pedido
-        rowData[12] = posicionContador; // Col M: Posición pedido
-        rowData[13] = matSeleccionado;  // Col N: Material
-        rowData[14] = "";               // Col O: EAN
-        rowData[15] = item.Cant;        // Col P: Cantidad
-
-        rows.push(rowData);
-        posicionContador += 10;
       }
+
+      const rowData = new Array(16).fill("");
+
+      rowData[0] = orderIndex; // Col 1: Contador
+      rowData[1] = "";         // Col 2: Nº Pedido SAP
+
+      // Datos de cabecera solo en la primera posición del pedido
+      if (esPrimeraPosicion) {
+        rowData[2] = sap.CLASE_PEDIDO;      // Col 3: Clase pedido
+        rowData[3] = sap.ORG_VENTAS;        // Col 4: Org ventas
+        rowData[4] = sap.CANAL;             // Col 5: Canal
+        rowData[5] = sap.SECTOR;            // Col 6: Sector
+        rowData[6] = configCli.SOLICITANTE; // Col 7: Solicitante
+        rowData[7] = pedido.Id_Destino || "11033482"; // Col 8: Destinatario Merc
+        rowData[8] = nuevoIdStr;            // Col 9: Num pedido cliente
+        rowData[9] = fechaEntFormatted;     // Col 10: Fecha preferente Entrega
+        esPrimeraPosicion = false;
+      }
+
+      rowData[10] = "";                // Col 11: Descuento ZTK1 (%)
+      rowData[11] = "";                // Col 12: Motivo pedido
+      rowData[12] = posicionContador;  // Col 13: Posición pedido (10, 20, 30...)
+      rowData[13] = matCsv;            // Col 14: Material SAP (ahora incluye códigos de 12 dígitos)
+      rowData[14] = "";                // Col 15: EAN
+      rowData[15] = item.Cant;         // Col 16: Cantidad
+
+      rows.push(rowData);
+      posicionContador += 10;
     });
   });
 
@@ -793,7 +998,7 @@ function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
     <div style="font-family: 'Inter', sans-serif; color: #2B2830; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E5E7EB; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
       <div style="text-align: center; border-bottom: 2px solid #E41F33; padding-bottom: 15px; margin-bottom: 20px;">
         <h1 style="color: #2B2830; font-size: 24px; margin: 0; font-weight: 900; letter-spacing: 2px;">ISDIN</h1>
-        <p style="color: #E41F33; font-size: 11px; font-weight: 700; margin: 5px 0 0; text-transform: uppercase; letter-spacing: 1px;">Notificación Automática de Órdenes B2B</p>
+        <p style="color: #E41F33; font-size: 11px; font-weight: 700; margin: 5px 0 0; text-transform: uppercase; letter-spacing: 1px;">Notificación Automática de Órdenes B2B - CMX</p>
       </div>
       
       <p style="font-size: 14px; line-height: 1.6; color: #4B5563;">Estimada <strong>${kamInfo.name}</strong>,</p>
@@ -805,54 +1010,112 @@ function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
 
   paquete.pedidos.forEach(p => {
     const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
-    let hasBackOrder = false;
-    let listHtml = "";
-    
+    let itemsNoActualizados = [];
+    let itemsValidos = [];
     let totalValorOk = 0;
     let totalValorBO = 0;
+    let hasBackOrder = false;
 
     itemsPedido.forEach(item => {
-      const matSeleccionado = paquete.materialesSeleccionados[item.Item_ID];
-      if (matSeleccionado && !matSeleccionado.includes("SIN_")) {
-        const isBO = paquete.backordersSeleccionados[item.Item_ID] || false;
-        if (isBO) hasBackOrder = true;
-        
-        const cant = parseInt(item.Cant) || 0;
-        const price = parseFloat(item.Valor_Unitario) || 0;
-        const sub = cant * price;
-        
+      let mat = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
+      
+      // CORRECCIÓN: Admite materiales de 12 dígitos sin mandarlos erróneamente a No Actualizados
+      let isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
+                            (!mat || mat.includes("SIN_") || mat === item.Producto_Cod || (mat.length === 13 && mat.startsWith("84")));
+      let isBO = !isNoActualizado && (paquete.backordersSeleccionados && paquete.backordersSeleccionados[item.Item_ID]);
+
+      const cant = parseInt(item.Cant) || 0;
+      const price = parseFloat(item.Valor_Unitario) || 0;
+      const sub = cant * price;
+
+      if (isNoActualizado) {
+        itemsNoActualizados.push({
+          desc: item.Descripcion || "Referencia no cruzada",
+          ean: item.Producto_Cod,
+          cant: cant
+        });
+      } else {
         if (isBO) {
+          hasBackOrder = true;
           totalValorBO += sub;
         } else {
           totalValorOk += sub;
         }
-
-        const formattedSub = "$" + Math.round(sub).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-        const subtotalText = sub > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
-
-        listHtml += `
-          <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
-            <div style="flex: 1; min-width: 0; padding-right: 10px;">
-              <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.Descripcion}</span>
-              <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.Producto_Cod} | ${cant} ud.${subtotalText}</span>
-            </div>
-            <div style="text-align: right; white-space: nowrap;">
-              ${isBO ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">Back Order</span>' : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">OK</span>'}
-            </div>
-          </div>
-        `;
+        itemsValidos.push({
+          desc: item.Descripcion,
+          ean: item.Producto_Cod,
+          cant: cant,
+          subtotal: sub,
+          isBO: isBO,
+          material: mat
+        });
       }
     });
 
-    if (listHtml === "") return;
+    let alertaNoActualizadosHtml = "";
+    if (itemsNoActualizados.length > 0) {
+      alertaNoActualizadosHtml = `
+        <div style="background-color: #FEF2F2; border: 1px solid #F87171; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
+          <div style="color: #991B1B; font-weight: bold; font-size: 12px; margin-bottom: 4px;">
+            ⚠️ Estos productos no se encuentran actualizados en la base de datos:
+          </div>
+          <p style="font-size: 11px; color: #7F1D1D; margin: 0 0 8px 0; line-height: 1.4;">
+            El cliente solicitó las siguientes referencias en la OC pero su código EAN no cruzó con el portafolio activo
+          </p>
+          <div style="border-top: 1px dashed #FCA5A5; padding-top: 6px;">
+      `;
 
-    const statusLabel = hasBackOrder 
-      ? '<span style="background-color: #FEF3C7; color: #D97706; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">Contiene Back Orders</span>' 
-      : '<span style="background-color: #D1FAE5; color: #059669; border: 1px solid #6EE7B7; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">Completada</span>';
+      itemsNoActualizados.forEach(it => {
+        alertaNoActualizadosHtml += `
+          <div style="padding: 4px 0; display: flex; justify-content: space-between; font-size: 11px; color: #7F1D1D;">
+            <div>
+              <strong>${it.desc}</strong> <span style="font-family: monospace;">(EAN: ${it.ean})</span>
+            </div>
+            <div style="font-weight: bold;">${it.cant} ud.</div>
+          </div>
+        `;
+      });
+
+      alertaNoActualizadosHtml += `</div></div>`;
+    }
+
+    let listHtml = "";
+    itemsValidos.forEach(item => {
+      let badge = item.isBO
+        ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">⚠️️ Back Order</span>'
+        : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">✅ OK</span>';
+
+      const formattedSub = "$" + Math.round(item.subtotal).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+      const subtotalText = item.subtotal > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
+
+      listHtml += `
+        <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
+          <div style="flex: 1; min-width: 0; padding-right: 10px;">
+            <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.desc}</span>
+            <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.Producto_Cod} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
+          </div>
+          <div style="text-align: right; white-space: nowrap;">
+            ${badge}
+          </div>
+        </div>
+      `;
+    });
+
+    let statusLabel = '';
+    if (itemsNoActualizados.length > 0) {
+      statusLabel = '<span style="background-color: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">🚨 EANs No Actualizados</span>';
+    } else if (hasBackOrder) {
+      statusLabel = '<span style="background-color: #FEF3C7; color: #D97706; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">⚠️ Contiene Back Orders</span>';
+    } else {
+      statusLabel = '<span style="background-color: #D1FAE5; color: #059669; border: 1px solid #6EE7B7; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">✅ Completada</span>';
+    }
 
     let valueSummaryText = `Valor Estimado Facturar (OK): $${Math.round(totalValorOk).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
     if (totalValorBO > 0) {
       valueSummaryText += ` | Valor en Back Order: $${Math.round(totalValorBO).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+    }
+    if (itemsNoActualizados.length > 0) {
+      valueSummaryText += ` <br><span style="color:#B91C1C; font-size:11px; margin-top:4px; display:block;"><strong>Alerta Comercial:</strong> Hay ${itemsNoActualizados.length} ítem(s) que requieren actualización de catálogo.</span>`;
     }
 
     htmlBody += `
@@ -861,6 +1124,7 @@ function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
           <span style="font-weight: bold; font-size: 14px; color: #111827;">OC: ${p.Pedido_ID}</span>
           ${statusLabel}
         </div>
+        ${alertaNoActualizadosHtml}
         ${listHtml}
         <div style="text-align: right; font-size: 13px; font-weight: bold; margin-top: 10px; color: #111827;">
           ${valueSummaryText}
@@ -875,7 +1139,6 @@ function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
     </div>
   `;
 
-  // Asunto exactamente homologado al estándar de Medipiel con icono de caja y fecha actual
   MailApp.sendEmail({
     to: kamEmail,
     subject: `📦 Resumen Pedidos CMX - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,

@@ -22,7 +22,7 @@
     <h2 id="wizard-titulo-inicio" class="text-2xl font-bold text-isdin-black mb-2"></h2>
     <p id="wizard-texto-inicio" class="text-gray-500 mb-6 max-w-lg mx-auto leading-relaxed"></p>
 
-    <button id="wizard-btn-inicio" onclick="wizardIniciarFlujo()" class="bg-isdin-black hover:opacity-90 text-white font-bold py-3.5 px-10 rounded-lg shadow-md transition-opacity text-lg"></button>
+    <button id="wizard-btn-inicio" onclick="wizardIniciarFlujo()" class="bg-isdin-black hover:opacity-90 text-white font-bold py-3.5 px-10 rounded-lg shadow-md transition-opacity text-lg cursor-pointer"></button>
   </div>
 
   <!-- 2. PANTALLA DE CARGA (SPINNER) -->
@@ -38,13 +38,29 @@
   <!-- 3. SELECTOR INICIAL MULTICLIENTE (CEN) -->
   <div id="wizard-seccion-clientes-cen" class="hidden fade-in mb-8 bg-white rounded-xl p-6 border border-gray-200 shadow-sm text-center">
     <h2 class="text-2xl font-extrabold text-isdin-black mb-2">Seleccione el cliente a tramitar</h2>
-    <p class="text-gray-500 text-sm mb-6 max-w-md mx-auto">Se identificaron los siguientes clientes en los archivos de CEN. Elija uno para continuar con la validación de sus órdenes.</p>
+    <p class="text-gray-500 text-sm mb-6 max-w-md mx-auto">Configure las órdenes de cada cliente. Al finalizar todos los clientes, se generará <b>un único archivo CSV consolidado</b> para SAP.</p>
     <div id="wizard-grid-clientes-cen" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 max-w-3xl mx-auto"></div>
+    
+    <!-- Barra de Consolidación Parcial (si hay clientes listos) -->
+    <div id="wizard-cen-barra-consolidar" class="hidden mt-8 pt-6 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-4 max-w-3xl mx-auto bg-blue-50/40 p-4 rounded-xl border border-blue-100">
+      <div class="text-left">
+        <p id="wizard-cen-resumen-listos" class="text-sm font-bold text-isdin-black"></p>
+        <p class="text-xs text-gray-500">Puedes generar el CSV unificado ahora con los clientes listos o configurar los demás.</p>
+      </div>
+      <button onclick="wizardEjecutarConsolidacionFinalCen()" class="bg-isdin-black hover:opacity-90 text-white font-extrabold py-2.5 px-6 rounded-lg text-sm shadow-md transition-all flex items-center gap-2 cursor-pointer">
+        <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+        <span>Generar CSV Unificado</span>
+      </button>
+    </div>
   </div>
 
   <!-- BANNER INFORMATIVO CLIENTE ACTUAL -->
   <div id="wizard-banner-cliente-actual" class="hidden mb-6 bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center justify-between shadow-2xs">
     <div class="flex items-center gap-3">
+      <button onclick="wizardVolverASelectorCen()" class="text-xs bg-white hover:bg-gray-100 text-gray-600 font-bold px-2.5 py-1.5 rounded-lg border border-gray-200 shadow-2xs flex items-center gap-1 cursor-pointer" title="Ver lista de clientes">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+        <span>Clientes</span>
+      </button>
       <span class="bg-isdin-blue text-white text-xs font-bold px-3 py-1 rounded-full uppercase">Tramitando</span>
       <h3 id="wizard-label-cliente-actual" class="font-extrabold text-isdin-black text-base"></h3>
     </div>
@@ -62,12 +78,12 @@
         </div>
         <div>
           <h2 class="text-lg font-bold text-red-900">Validación: Faltan EANs en la Base</h2>
-          <p class="text-sm text-red-800">Se encontraron EANs que no están registrados en la hoja de Productos. Digítelos para emparejar manualmente.</p>
+          <p class="text-sm text-red-800">Se encontraron referencias que no están registradas en la hoja de Productos. Digite el código de Material SAP manual para emparejar.</p>
         </div>
       </div>
       <div id="wizard-tabla-faltantes" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
       <div class="mt-5 border-t border-red-200 pt-4 flex justify-end">
-        <button onclick="wizardContinuarEan()" class="bg-isdin-red hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg transition duration-200 shadow-md">Registrar y continuar</button>
+        <button onclick="wizardContinuarEan()" class="bg-isdin-red hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg transition duration-200 shadow-md cursor-pointer">Registrar y continuar</button>
       </div>
     </div>
 
@@ -98,7 +114,7 @@
           <span class="text-xs text-gray-500 font-semibold select-none">Notificar automáticamente a la KAM por correo</span>
         </label>
       </div>
-      <button id="wizard-btn-guardar-principal" onclick="wizardAvanzarOGuardar()" class="bg-isdin-black hover:opacity-90 text-white font-bold py-3 px-8 rounded-lg transition duration-200 shadow-md">Generar CSV SAP</button>
+      <button id="wizard-btn-guardar-principal" onclick="wizardAvanzarOGuardar()" class="bg-isdin-black hover:opacity-90 text-white font-bold py-3 px-8 rounded-lg transition duration-200 shadow-md cursor-pointer">Generar CSV SAP</button>
     </div>
 
     <!-- 5. PANTALLA DE ÉXITO Y RESUMEN DETALLADO -->
@@ -107,7 +123,11 @@
         <svg class="w-14 h-14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
       </div>
       <h2 id="wizard-titulo-exito" class="text-3xl font-bold text-isdin-black mb-3">¡Proceso Completado!</h2>
-      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente. El archivo CSV ya quedó guardado en la carpeta de Drive correspondiente.</p>
+      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente.</p>
+      <button id="wizard-btn-descargar-csv" class="bg-isdin-black hover:bg-gray-800 text-white font-bold py-4 px-10 rounded-lg transition duration-200 shadow-lg inline-flex items-center gap-3 mx-auto mt-2 cursor-pointer">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+        Descargar Archivo CSV
+      </button>
 
       <div id="wizard-contenedor-resumen" class="mt-8 max-w-2xl mx-auto text-left bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
         <div class="w-full px-5 py-4 flex items-center bg-gray-50 border-b border-gray-200">
@@ -190,7 +210,8 @@
     clienteCenSeleccionado: null,
     materialesPreseleccionados: {},
     productosAgrupados: [],
-    paquetesProcesados: []
+    paquetesProcesados: [],
+    clientesCenConfigurados: {}
   };
 
   function wizardInit(cliente) {
@@ -211,7 +232,8 @@
       clienteCenSeleccionado: null,
       materialesPreseleccionados: {},
       productosAgrupados: [],
-      paquetesProcesados: []
+      paquetesProcesados: [],
+      clientesCenConfigurados: {}
     };
 
     wizardResetFlujo();
@@ -234,7 +256,7 @@
       'wizard-start-step', 'wizard-loading', 'wizard-seccion-clientes-cen', 'wizard-banner-cliente-actual',
       'wizard-flow-container', 'wizard-seccion-revision', 'wizard-seccion-fechas', 'wizard-seccion-auto',
       'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-seccion-descarga',
-      'wizard-contenedor-resumen'
+      'wizard-contenedor-resumen', 'wizard-cen-barra-consolidar'
     ];
     secciones.forEach(id => {
       const el = document.getElementById(id);
@@ -247,6 +269,7 @@
       if (el) el.innerHTML = '';
     });
     document.getElementById('wizard-resumen-texto').innerHTML = '';
+    document.getElementById('wizard-btn-descargar-csv').onclick = null;
   }
 
   function wizardIniciarFlujo() {
@@ -269,6 +292,22 @@
     wizardState.payloadRaw = respuesta;
 
     if (!respuesta || !respuesta.pedidosExtraidos || respuesta.pedidosExtraidos.length === 0) {
+      if (respuesta && respuesta.errores && respuesta.errores.length > 0) {
+        Swal.fire({
+          icon: 'error',
+          title: 'Error de Lectura en los Archivos',
+          html: `
+            <p class="text-xs text-gray-600 mb-3">Se detectaron archivos pero no se pudieron procesar debido a las siguientes causas:</p>
+            <div class="text-left text-xs bg-red-50 p-3 rounded-lg border border-red-200 text-red-700 max-h-60 overflow-y-auto font-mono space-y-1">
+              ${respuesta.errores.map(e => `<div>• ${e}</div>`).join('')}
+            </div>
+          `,
+          confirmButtonColor: '#2B2830'
+        });
+        volverDashboard();
+        return;
+      }
+
       let msg = cfg.textoSinResultados;
       if (respuesta && respuesta.yaProcesados && respuesta.yaProcesados.length > 0) {
         msg = `Las siguientes órdenes de compra ya se encuentran registradas en el Consolidado y fueron omitidas para evitar duplicados: <br><br><span class="font-mono bg-gray-100 px-3 py-2 rounded text-red-600 font-bold block text-center border border-red-200 max-w-sm mx-auto shadow-sm">${respuesta.yaProcesados.join(', ')}</span>.`;
@@ -281,6 +320,7 @@
     if (wizardState.cliente === 'CEN' && respuesta.clientesDetectados && respuesta.clientesDetectados.length > 0) {
       wizardState.clientesCenPendientes = [...respuesta.clientesDetectados];
       wizardState.totalClientesCenIniciales = respuesta.clientesDetectados.length;
+      wizardState.clientesCenConfigurados = {};
       wizardRenderSelectorClientesCen();
     } else {
       wizardState.payloadActual = respuesta;
@@ -298,14 +338,39 @@
     grid.innerHTML = "";
 
     wizardState.clientesCenPendientes.forEach(cli => {
+      const estaListo = !!wizardState.clientesCenConfigurados[cli.key];
+      const borderClass = estaListo ? 'border-emerald-300 bg-emerald-50/40 hover:bg-emerald-50/70' : 'border-blue-200 bg-blue-50/50 hover:bg-blue-100/60';
+      const badgeHtml = estaListo 
+        ? `<span class="bg-emerald-600 text-white text-xs font-extrabold px-3 py-1 rounded-full shadow-2xs flex items-center gap-1">✓ Listo (${cli.count} OCs)</span>`
+        : `<span class="bg-isdin-blue text-white text-xs font-extrabold px-3.5 py-1.5 rounded-full shadow-2xs">${cli.count} órdenes pendientes</span>`;
+      const subtitulo = estaListo ? `<span class="text-[11px] text-emerald-700 font-semibold mt-1">Configurado en segundo plano (clic para editar)</span>` : '';
+
       grid.innerHTML += `
         <div onclick="wizardSeleccionarClienteCen('${cli.key}')" 
-             class="cursor-pointer bg-blue-50/50 hover:bg-blue-100/60 border border-blue-200 rounded-xl p-5 text-center transition-all duration-200 shadow-2xs hover:shadow-md flex flex-col items-center justify-center gap-2 group">
+             class="cursor-pointer ${borderClass} border rounded-xl p-5 text-center transition-all duration-200 shadow-2xs hover:shadow-md flex flex-col items-center justify-center gap-2 group">
           <span class="font-extrabold text-isdin-black text-lg group-hover:text-isdin-blue transition-colors">${cli.nombreDisplay}</span>
-          <span class="bg-isdin-blue text-white text-xs font-extrabold px-3.5 py-1.5 rounded-full shadow-2xs">${cli.count} órdenes pendientes</span>
+          ${badgeHtml}
+          ${subtitulo}
         </div>
       `;
     });
+
+    const listosCount = Object.keys(wizardState.clientesCenConfigurados).length;
+    const barraConsolidar = document.getElementById('wizard-cen-barra-consolidar');
+    if (listosCount > 0) {
+      barraConsolidar.classList.remove('hidden');
+      document.getElementById('wizard-cen-resumen-listos').innerText = `✓ ${listosCount} de ${wizardState.totalClientesCenIniciales} clientes listos para consolidar`;
+    } else {
+      barraConsolidar.classList.add('hidden');
+    }
+  }
+
+  function wizardVolverASelectorCen() {
+    ['wizard-seccion-revision', 'wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-flow-container'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    });
+    wizardRenderSelectorClientesCen();
   }
 
   function wizardSeleccionarClienteCen(cliKey) {
@@ -326,15 +391,14 @@
     banner.classList.remove('hidden');
     document.getElementById('wizard-label-cliente-actual').innerText = cliObj ? cliObj.nombreDisplay : "Cliente CEN";
     
-    const procesadosCount = wizardState.totalClientesCenIniciales - wizardState.clientesCenPendientes.length + 1;
-    document.getElementById('wizard-label-cliente-contador').innerText = `Cliente ${procesadosCount} de ${wizardState.totalClientesCenIniciales}`;
+    const configuradosCount = Object.keys(wizardState.clientesCenConfigurados).length;
+    document.getElementById('wizard-label-cliente-contador').innerText = `${configuradosCount} de ${wizardState.totalClientesCenIniciales} listos`;
 
     document.getElementById('wizard-flow-container').classList.remove('hidden');
     wizardCheckEansFaltantes();
   }
 
   function wizardCheckEansFaltantes() {
-    const cfg = wizardState.config;
     const eansUnicos = {};
 
     wizardState.payloadActual.itemsExtraidos.forEach(i => {
@@ -358,11 +422,11 @@
         contFaltantes.innerHTML += `
           <div id="wizard_card_faltante_${cod}" class="relative bg-white p-4 rounded-lg border border-red-200 flex flex-col gap-2 shadow-sm pr-16">
             <div>
-              <p class="text-xs text-isdin-black font-extrabold">${item.Descripcion} | <span class="text-gray-500 font-mono">EAN: ${cod}</span></p>
+              <p class="text-xs text-isdin-black font-extrabold">${item.Descripcion || 'Referencia CEN'} | <span class="text-gray-500 font-mono">EAN: ${cod}</span></p>
               <p class="text-xs text-isdin-red font-semibold mt-1">Suma Req: ${item.CantTotal} ud.</p>
             </div>
-            <input type="text" id="wizard_ean_${cod}" placeholder="Digitar Material SAP manual..."
-                   class="w-full mt-1 p-2 text-sm border border-gray-300 rounded outline-none focus:border-isdin-red">
+            <input type="text" id="wizard_ean_${cod}" placeholder="Digitar Material SAP manual (o dejar en blanco si no existe)..."
+                   class="w-full mt-1 p-2 text-sm border border-gray-300 rounded outline-none focus:border-isdin-red font-mono">
           </div>`;
       });
     } else {
@@ -382,6 +446,16 @@
             if (String(item.Producto_Cod).trim() === cod) {
               item.EAN_Mapeado = cod;
               item.Materiales_Disponibles = matForzado;
+              item.isNoActualizado = false;
+            }
+          });
+        } else {
+          // Si se deja en blanco: Se marca como NO ACTUALIZADO (Material SAP vacío, nunca EAN)
+          wizardState.payloadActual.itemsExtraidos.forEach(item => {
+            if (String(item.Producto_Cod).trim() === cod) {
+              item.EAN_Mapeado = "";
+              item.Materiales_Disponibles = [{ material: "", stock: 0, isExpired: false, isManual: true }];
+              item.isNoActualizado = true;
             }
           });
         }
@@ -396,8 +470,19 @@
 
   function wizardRenderEtapaPrincipal() {
     wizardState.payloadActual.itemsExtraidos.forEach(item => {
+      // VALIDACIÓN FLEXIBLE DE MATERIAL SAP: Permite códigos de hasta 12 dígitos oficiales (ej: 690033624480)
+      const tieneMaterialValido = item.Materiales_Disponibles && item.Materiales_Disponibles.some(m => {
+        if (!m.material) return false;
+        const matStr = String(m.material).trim();
+        return !matStr.includes("SIN_") && matStr !== item.Producto_Cod && !(matStr.length === 13 && matStr.startsWith("84"));
+      });
+
+      if (!item.EAN_Mapeado || !tieneMaterialValido) {
+        item.isNoActualizado = true;
+      }
       if (!item.Materiales_Disponibles || item.Materiales_Disponibles.length === 0) {
-        item.Materiales_Disponibles = [{ material: item.EAN_Mapeado || "SIN_EAN", stock: 0, isExpired: false, isManual: true }];
+        item.Materiales_Disponibles = [{ material: "", stock: 0, isExpired: false, isManual: true }];
+        item.isNoActualizado = true;
       }
     });
 
@@ -410,6 +495,7 @@
           CantTotal: 0,
           EAN_Mapeado: item.EAN_Mapeado,
           Materiales_Disponibles: item.Materiales_Disponibles,
+          isNoActualizado: !!item.isNoActualizado,
           Items_Originales: []
         };
       }
@@ -439,6 +525,11 @@
     let itemsMulti = [];
 
     wizardState.productosAgrupados.forEach(grp => {
+      // Filtro estricto: Las referencias no actualizadas ya se aislaron; no van a stock ni a Back Order
+      if (grp.isNoActualizado) {
+        return;
+      }
+
       const stockTotal = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
       const isBackOrder = stockTotal < grp.CantTotal;
 
@@ -468,12 +559,14 @@
               </div>
               <div class="mt-2 pt-2 border-t border-gray-100 flex items-center gap-2">
                 <span class="text-xs text-gray-500 font-semibold whitespace-nowrap">✏️ Cambiar Material SAP:</span>
-                <input type="text" id="wizard_override_mat_${grp.Producto_Cod}" placeholder="Ingresar nuevo ID (ej: 690033953)..."
+                <input type="text" id="wizard_override_mat_${grp.Producto_Cod}" placeholder="Ingresar nuevo ID (ej: 690032151480)..."
                        class="w-full p-1.5 text-xs border border-gray-300 rounded outline-none focus:border-isdin-red bg-gray-50 focus:bg-white font-mono">
               </div>
             </div>
           </div>`;
       }).join('');
+    } else {
+      document.getElementById('wizard-seccion-auto').classList.add('hidden');
     }
 
     // 3. Múltiples Lotes / Alertas de Stock (Back Order)
@@ -502,7 +595,7 @@
                 <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-[10px] font-bold">⚠️ BACK ORDER</span>
               </div>
             </div>
-            <select id="wizard_mat_${grp.Producto_Cod}" onchange="wizardToggleManualInputMulti('${grp.Producto_Cod}', this.value)" class="w-full mt-1 p-2 text-sm border border-gray-300 bg-gray-50 rounded outline-none focus:border-isdin-red cursor-pointer">
+            <select id="wizard_mat_${grp.Producto_Cod}" onchange="wizardToggleManualInputMulti('${grp.Producto_Cod}', this.value)" class="w-full mt-1 p-2 text-sm border border-gray-300 bg-gray-50 rounded outline-none focus:border-isdin-red cursor-pointer font-mono">
               ${options}
             </select>
             <div id="container_manual_multi_${grp.Producto_Cod}" class="hidden mt-1 pt-1">
@@ -511,19 +604,46 @@
             </div>
           </div>`;
       }).join('');
+    } else {
+      document.getElementById('wizard-seccion-materiales').classList.add('hidden');
     }
 
     document.getElementById('wizard-seccion-guardar').classList.remove('hidden');
-    document.getElementById('wizard-resumen-texto').innerHTML = `<b>${wizardState.payloadActual.itemsExtraidos.length}</b> posiciones de <b>${wizardState.payloadActual.pedidosExtraidos.length}</b> órdenes listas para tramitar.`;
+    const validasTotal = wizardState.payloadActual.itemsExtraidos.filter(i => !i.isNoActualizado).length;
+    const noActTotal = wizardState.payloadActual.itemsExtraidos.length - validasTotal;
+    
+    // Conteo de EANs únicos que no cruzaron
+    const eansUnicosNoAct = new Set(wizardState.payloadActual.itemsExtraidos.filter(i => i.isNoActualizado).map(i => i.Producto_Cod)).size;
+
+    let resumenHtml = `<b>${validasTotal}</b> posiciones con Material SAP de <b>${wizardState.payloadActual.pedidosExtraidos.length}</b> órdenes listas para tramitar.`;
+    if (noActTotal > 0) {
+      resumenHtml += ` <span class="text-red-600 font-bold">(${eansUnicosNoAct} EAN(s) único(s) en ${noActTotal} posiciones pasarán sin código SAP)</span>`;
+    }
+    document.getElementById('wizard-resumen-texto').innerHTML = resumenHtml;
 
     const btnPrincipal = document.getElementById('wizard-btn-guardar-principal');
-    const cliObj = wizardState.clientesCenPendientes.find(c => c.key === wizardState.clienteCenSeleccionado);
-    const nombreCliActual = cliObj ? cliObj.nombreDisplay : "Cliente";
 
-    if (wizardState.cliente === 'CEN' && wizardState.clientesCenPendientes.length > 1) {
-      btnPrincipal.innerText = `Procesar Órdenes de ${nombreCliActual}`;
+    if (wizardState.cliente === 'CEN') {
+      const cliObj = wizardState.clientesCenPendientes.find(c => c.key === wizardState.clienteCenSeleccionado);
+      const nombreCliActual = cliObj ? cliObj.nombreDisplay : "Cliente";
+
+      const otrosPendientes = wizardState.clientesCenPendientes.filter(c => !wizardState.clientesCenConfigurados[c.key] && c.key !== wizardState.clienteCenSeleccionado);
+
+      if (otrosPendientes.length > 0) {
+        btnPrincipal.innerHTML = `Guardar ${nombreCliActual} y Pasar al Siguiente Cliente ➜`;
+        btnPrincipal.className = "bg-blue-700 hover:bg-blue-800 text-white font-extrabold py-3.5 px-8 rounded-lg transition duration-200 shadow-md text-sm cursor-pointer";
+      } else {
+        const totalClientesConsolidados = Object.keys(wizardState.clientesCenConfigurados).length + 1;
+        if (totalClientesConsolidados > 1) {
+          btnPrincipal.innerHTML = `GENERAR CSV SAP UNIFICADO (${totalClientesConsolidados} CLIENTES)`;
+        } else {
+          btnPrincipal.innerHTML = `GENERAR CSV SAP`;
+        }
+        btnPrincipal.className = "bg-isdin-black hover:opacity-90 text-white font-extrabold py-3.5 px-8 rounded-lg transition duration-200 shadow-md text-sm cursor-pointer";
+      }
     } else {
       btnPrincipal.innerText = "GENERAR CSV SAP";
+      btnPrincipal.className = "bg-isdin-black hover:opacity-90 text-white font-extrabold py-3.5 px-8 rounded-lg transition duration-200 shadow-md text-sm cursor-pointer";
     }
   }
 
@@ -543,49 +663,201 @@
   }
 
   function wizardAvanzarOGuardar() {
-    wizardGuardarTodo();
+    if (wizardState.cliente === 'CEN') {
+      wizardGuardarConfiguracionClienteCenActual();
+    } else {
+      wizardGuardarTodo();
+    }
   }
 
-  function wizardGuardarTodo() {
-    const cfg = wizardState.config;
+  function wizardGuardarConfiguracionClienteCenActual() {
+    const cliKey = wizardState.clienteCenSeleccionado;
+    const cliObj = wizardState.clientesCenPendientes.find(c => c.key === cliKey);
+    const nombreCliActual = cliObj ? cliObj.nombreDisplay : "Cliente";
+
     const fechasEntregas = {};
     wizardState.payloadActual.pedidosExtraidos.forEach(p => {
       const elFecha = document.getElementById(`wizard_fecha_${p.Pedido_ID}`);
-      if (elFecha) {
-        fechasEntregas[p.Pedido_ID] = { fecha: elFecha.value };
+      if (elFecha) fechasEntregas[p.Pedido_ID] = { fecha: elFecha.value };
+    });
+
+    const materialesSeleccionados = {};
+    const backordersSeleccionados = {};
+    const noActualizadosSeleccionados = {};
+
+    wizardState.productosAgrupados.forEach(grp => {
+      let matFinal = "";
+      let selectedStock = 0;
+      let isBackOrder = false;
+      let isNoActualizado = false;
+
+      if (grp.isNoActualizado) {
+        matFinal = "";
+        isNoActualizado = true;
+        isBackOrder = false;
+      } else {
+        const inputOverride = document.getElementById(`wizard_override_mat_${grp.Producto_Cod}`);
+        const sel = document.getElementById(`wizard_mat_${grp.Producto_Cod}`);
+
+        if (inputOverride && inputOverride.value.trim() !== "") {
+          matFinal = inputOverride.value.trim();
+          isBackOrder = false;
+          isNoActualizado = false;
+        } else if (sel && sel.value !== "MANUAL_OVERRIDE") {
+          let idx = parseInt(sel.value);
+          let matCand = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].material : "";
+          selectedStock = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].stock : 0;
+          
+          if (!matCand || matCand.includes("SIN_") || matCand === grp.Producto_Cod || (matCand.length === 13 && matCand.startsWith("84"))) {
+            matFinal = "";
+            isNoActualizado = true;
+            isBackOrder = false;
+          } else {
+            matFinal = matCand;
+            isBackOrder = selectedStock < grp.CantTotal;
+          }
+        } else {
+          let bestMat = grp.Materiales_Disponibles.find(m => m.stock >= grp.CantTotal) || grp.Materiales_Disponibles[0];
+          let matCand = bestMat ? bestMat.material : "";
+
+          if (!matCand || matCand.includes("SIN_") || matCand === grp.Producto_Cod || (matCand.length === 13 && matCand.startsWith("84"))) {
+            matFinal = "";
+            isNoActualizado = true;
+            isBackOrder = false;
+          } else {
+            matFinal = matCand;
+            const totalStockBodega = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
+            isBackOrder = totalStockBodega < grp.CantTotal;
+          }
+        }
       }
+
+      grp.Items_Originales.forEach(itemOriginal => {
+        materialesSeleccionados[itemOriginal.Item_ID] = matFinal;
+        backordersSeleccionados[itemOriginal.Item_ID] = isBackOrder;
+        noActualizadosSeleccionados[itemOriginal.Item_ID] = isNoActualizado;
+      });
+    });
+
+    wizardState.clientesCenConfigurados[cliKey] = {
+      pedidos: wizardState.payloadActual.pedidosExtraidos,
+      items: wizardState.payloadActual.itemsExtraidos,
+      fechasEntregas: fechasEntregas,
+      materialesSeleccionados: materialesSeleccionados,
+      backordersSeleccionados: backordersSeleccionados,
+      noActualizadosSeleccionados: noActualizadosSeleccionados
+    };
+
+    const otrosPendientes = wizardState.clientesCenPendientes.filter(c => !wizardState.clientesCenConfigurados[c.key] && c.key !== cliKey);
+
+    if (otrosPendientes.length > 0) {
+      const siguienteCli = otrosPendientes[0];
+      Swal.fire({
+        icon: 'success',
+        title: `¡${nombreCliActual} configurado!`,
+        text: `Guardado en segundo plano. Pasando a ${siguienteCli.nombreDisplay}...`,
+        timer: 1500,
+        showConfirmButton: false
+      });
+
+      wizardResetFlujo();
+      wizardSeleccionarClienteCen(siguienteCli.key);
+    } else {
+      wizardEjecutarConsolidacionFinalCen();
+    }
+  }
+
+  function wizardEjecutarConsolidacionFinalCen() {
+    const listosKeys = Object.keys(wizardState.clientesCenConfigurados);
+    if (listosKeys.length === 0) {
+      mostrarError("No hay clientes configurados para consolidar.");
+      return;
+    }
+
+    const todosPedidos = [];
+    const todosItems = [];
+    const todasFechas = {};
+    const todosMateriales = {};
+    const todosBackorders = {};
+    const todosNoActualizados = {};
+
+    listosKeys.forEach(k => {
+      const conf = wizardState.clientesCenConfigurados[k];
+      todosPedidos.push(...conf.pedidos);
+      todosItems.push(...conf.items);
+      Object.assign(todasFechas, conf.fechasEntregas);
+      Object.assign(todosMateriales, conf.materialesSeleccionados);
+      Object.assign(todosBackorders, conf.backordersSeleccionados);
+      if (conf.noActualizadosSeleccionados) Object.assign(todosNoActualizados, conf.noActualizadosSeleccionados);
+    });
+
+    const notificarKAM = document.getElementById('wizard-check-notificar-kam') ? document.getElementById('wizard-check-notificar-kam').checked : true;
+
+    const paqueteConsolidadoCen = {
+      pedidos: todosPedidos,
+      items: todosItems,
+      fechasEntregas: todasFechas,
+      materialesSeleccionados: todosMateriales,
+      backordersSeleccionados: todosBackorders,
+      noActualizadosSeleccionados: todosNoActualizados,
+      notificarKAM: notificarKAM
+    };
+
+    wizardEjecutarGuardadoBackend(paqueteConsolidadoCen);
+  }
+
+  function wizardGuardarTodo() {
+    const fechasEntregas = {};
+    wizardState.payloadActual.pedidosExtraidos.forEach(p => {
+      const elFecha = document.getElementById(`wizard_fecha_${p.Pedido_ID}`);
+      if (elFecha) fechasEntregas[p.Pedido_ID] = { fecha: elFecha.value };
     });
 
     wizardState.materialesPreseleccionados = {};
     const backordersCalculados = {};
+    const noActualizadosCalculados = {};
 
     wizardState.productosAgrupados.forEach(grp => {
-      let selectedStock = 0;
       let matFinal = "";
+      let selectedStock = 0;
+      let isBackOrder = false;
+      let isNoActualizado = false;
 
-      const inputOverride = document.getElementById(`wizard_override_mat_${grp.Producto_Cod}`);
-      if (inputOverride && inputOverride.value.trim() !== "") {
-        matFinal = inputOverride.value.trim();
-        selectedStock = 999999;
+      if (grp.isNoActualizado) {
+        matFinal = "";
+        isNoActualizado = true;
+        isBackOrder = false;
       } else {
-        if (grp.Materiales_Disponibles.length > 1) {
-          const sel = document.getElementById(`wizard_mat_${grp.Producto_Cod}`);
-          if (sel && sel.value !== "MANUAL_OVERRIDE") {
-            let idx = parseInt(sel.value);
-            matFinal = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].material : "";
-            selectedStock = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].stock : 0;
-          }
+        const inputOverride = document.getElementById(`wizard_override_mat_${grp.Producto_Cod}`);
+        const sel = document.getElementById(`wizard_mat_${grp.Producto_Cod}`);
+
+        if (inputOverride && inputOverride.value.trim() !== "") {
+          matFinal = inputOverride.value.trim();
+          isBackOrder = false;
+          isNoActualizado = false;
+        } else if (sel && sel.value !== "MANUAL_OVERRIDE") {
+          let idx = parseInt(sel.value);
+          matFinal = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].material : "";
+          selectedStock = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].stock : 0;
+          isBackOrder = selectedStock < grp.CantTotal;
         } else {
-          matFinal = grp.Materiales_Disponibles[0] ? grp.Materiales_Disponibles[0].material : "SIN_MATERIAL";
-          selectedStock = grp.Materiales_Disponibles[0] ? grp.Materiales_Disponibles[0].stock : 0;
+          let bestMat = grp.Materiales_Disponibles.find(m => m.stock >= grp.CantTotal) || grp.Materiales_Disponibles[0];
+          matFinal = bestMat ? bestMat.material : (grp.EAN_Mapeado || "SIN_MATERIAL");
+          const totalStockBodega = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
+          isBackOrder = totalStockBodega < grp.CantTotal;
+        }
+
+        if (!matFinal || matFinal.includes("SIN_") || matFinal === grp.Producto_Cod || (matFinal.length === 13 && matFinal.startsWith("84"))) {
+          matFinal = "";
+          isNoActualizado = true;
+          isBackOrder = false;
         }
       }
 
-      let isBackOrder = selectedStock < grp.CantTotal;
-
       grp.Items_Originales.forEach(itemOriginal => {
-        wizardState.materialesPreseleccionados[itemOriginal.Item_ID] = matFinal || "SIN_MATERIAL";
+        wizardState.materialesPreseleccionados[itemOriginal.Item_ID] = matFinal;
         backordersCalculados[itemOriginal.Item_ID] = isBackOrder;
+        noActualizadosCalculados[itemOriginal.Item_ID] = isNoActualizado;
       });
     });
 
@@ -597,45 +869,49 @@
       fechasEntregas: fechasEntregas,
       materialesSeleccionados: wizardState.materialesPreseleccionados,
       backordersSeleccionados: backordersCalculados,
+      noActualizadosSeleccionados: noActualizadosCalculados,
       notificarKAM: notificarKAM
     };
 
-    ['wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-banner-cliente-actual'].forEach(id => document.getElementById(id).classList.add('hidden'));
+    wizardEjecutarGuardadoBackend(paqueteFinal);
+  }
+
+  function wizardEjecutarGuardadoBackend(paqueteFinal) {
+    const cfg = wizardState.config;
+    ['wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-banner-cliente-actual', 'wizard-seccion-clientes-cen'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    });
+
     document.getElementById('wizard-loading').classList.remove('hidden');
     document.getElementById('wizard-loading-text').innerText = cfg.textoGuardando;
 
     google.script.run
       .withSuccessHandler((respuestaObj) => {
         document.getElementById('wizard-loading').classList.add('hidden');
-
         wizardState.paquetesProcesados.push({ paquete: paqueteFinal, respuesta: respuestaObj });
-
-        if (wizardState.cliente === 'CEN' && wizardState.clientesCenPendientes.length > 0) {
-          const idxActual = wizardState.clientesCenPendientes.findIndex(c => c.key === wizardState.clienteCenSeleccionado);
-          if (idxActual !== -1) {
-            wizardState.clientesCenPendientes.splice(idxActual, 1);
-          }
-
-          if (wizardState.clientesCenPendientes.length > 0) {
-            wizardResetFlujo();
-            wizardRenderSelectorClientesCen();
-            Swal.fire({ 
-              icon: 'success', 
-              title: '¡Cliente Procesado!', 
-              text: 'Las órdenes del cliente fueron guardadas exitosamente. Seleccione el siguiente cliente a tramitar.', 
-              confirmButtonColor: '#2B2830' 
-            });
-            return;
-          }
-        }
 
         document.getElementById('wizard-seccion-descarga').classList.remove('hidden');
 
+        const btnDescarga = document.getElementById('wizard-btn-descargar-csv');
+        if (btnDescarga) {
+          btnDescarga.onclick = function () { descargarArchivoCSV(respuestaObj.csvData, respuestaObj.fileName); };
+        }
+
         wizardGenerarResumenAcumuladoOC();
 
-        Swal.fire({ icon: 'success', title: '¡Proceso Completado!', text: 'Se han procesado exitosamente todas las órdenes de compra del lote.', confirmButtonColor: '#2B2830' });
+        const clientesTexto = wizardState.cliente === 'CEN' ? `Se generó un único archivo CSV unificado para todos los clientes tramitados.` : 'El archivo CSV ya quedó guardado en Drive.';
+        Swal.fire({ 
+          icon: 'success', 
+          title: '¡Proceso Completado!', 
+          text: clientesTexto, 
+          confirmButtonColor: '#2B2830' 
+        });
       })
-      .withFailureHandler((err) => { mostrarError(err.message); volverDashboard(); })[cfg.fnGuardar](paqueteFinal);
+      .withFailureHandler((err) => { 
+        mostrarError(err.message); 
+        volverDashboard(); 
+      })[cfg.fnGuardar](paqueteFinal);
   }
 
   function wizardGenerarResumenAcumuladoOC() {
@@ -645,48 +921,51 @@
       const paquete = itemPaquete.paquete;
 
       paquete.items.forEach(item => {
-        let mat = paquete.materialesSeleccionados[item.Item_ID] || "";
-        let fueInyectado = (mat !== "" && !mat.includes("SIN_"));
-        let isBackOrder = paquete.backordersSeleccionados[item.Item_ID] || false;
+        let mat = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? paquete.materialesSeleccionados[item.Item_ID] : "";
+        let isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || (!mat || mat.includes("SIN_") || mat === item.Producto_Cod || (mat.length === 13 && mat.startsWith("84")));
+        let isBackOrder = !isNoActualizado && (paquete.backordersSeleccionados && paquete.backordersSeleccionados[item.Item_ID]);
         let subtotal = (parseInt(item.Cant) || 0) * (Number(item.Valor_Unitario) || 0);
 
         if (!resumen[item.Pedido_ID]) {
           resumen[item.Pedido_ID] = {
             inyectados: 0,
+            noActualizadosCount: 0,
             totalFacturado: 0,
             totalBackOrder: 0,
-            contieneBackOrders: false,
-            posiciones: []
+            posicionesOk: [],
+            posicionesBO: [],
+            posicionesNoActualizadas: []
           };
         }
 
-        if (fueInyectado) {
+        if (isNoActualizado) {
+          resumen[item.Pedido_ID].noActualizadosCount++;
+          resumen[item.Pedido_ID].posicionesNoActualizadas.push({
+            descripcion: item.Descripcion || "Referencia no cruzada",
+            ean: item.Producto_Cod,
+            unidades: parseInt(item.Cant) || 0
+          });
+        } else {
           resumen[item.Pedido_ID].inyectados++;
-          
-          if (isBackOrder) {
-            resumen[item.Pedido_ID].totalBackOrder += subtotal;
-            resumen[item.Pedido_ID].contieneBackOrders = true;
-          } else {
-            resumen[item.Pedido_ID].totalFacturado += subtotal;
-          }
-
-          resumen[item.Pedido_ID].posiciones.push({
+          const objPos = {
             descripcion: item.Descripcion,
             ean: item.Producto_Cod,
             unidades: parseInt(item.Cant) || 0,
             subtotal: subtotal,
             isBackOrder: isBackOrder,
             material: mat
-          });
+          };
+
+          if (isBackOrder) {
+            resumen[item.Pedido_ID].totalBackOrder += subtotal;
+            resumen[item.Pedido_ID].posicionesBO.push(objPos);
+          } else {
+            resumen[item.Pedido_ID].totalFacturado += subtotal;
+            resumen[item.Pedido_ID].posicionesOk.push(objPos);
+          }
         }
       });
     });
-
-    let totalPosiciones = Object.values(resumen).reduce((sum, r) => sum + r.posiciones.length, 0);
-    if (totalPosiciones === 0) {
-      document.getElementById('wizard-contenedor-resumen').classList.add('hidden');
-      return;
-    }
 
     const formatCOP = (num) => {
       let val = Number(num);
@@ -698,14 +977,29 @@
 
     for (const oc in resumen) {
       const ord = resumen[oc];
-      if (ord.posiciones.length === 0) continue;
+      const totalPos = ord.inyectados + ord.noActualizadosCount;
+      if (totalPos === 0) continue;
 
-      let badgeEncabezadoClass = ord.contieneBackOrders ? 'bg-amber-100 text-amber-800 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200';
-      let statusText = ord.contieneBackOrders ? '⚠️ Contiene Back Orders' : '✅ Completada con Éxito';
+      let badgeEncabezadoClass = '';
+      let statusText = '';
+      
+      if (ord.noActualizadosCount > 0) {
+        badgeEncabezadoClass = 'bg-red-100 text-red-800 border-red-200';
+        statusText = '🚨 Referencias No Actualizadas';
+      } else if (ord.totalBackOrder > 0) {
+        badgeEncabezadoClass = 'bg-amber-100 text-amber-800 border-amber-200';
+        statusText = '⚠️ Contiene Back Orders';
+      } else {
+        badgeEncabezadoClass = 'bg-emerald-100 text-emerald-800 border-emerald-200';
+        statusText = '✅ Completada con Éxito';
+      }
 
       let totalsHtml = `Facturado (OK): <b class="text-emerald-700 font-bold">${formatCOP(ord.totalFacturado)}</b>`;
       if (ord.totalBackOrder > 0) {
         totalsHtml += ` <span class="mx-2 text-gray-300">|</span> Retenido (Back Order): <b class="text-amber-600 font-bold">${formatCOP(ord.totalBackOrder)}</b>`;
+      }
+      if (ord.noActualizadosCount > 0) {
+        totalsHtml += ` <span class="mx-2 text-gray-300">|</span> <b class="text-red-600 font-bold">${ord.noActualizadosCount} ítem(s) no actualizados</b>`;
       }
 
       html += `
@@ -718,34 +1012,68 @@
               </div>
             </div>
             <p class="text-xs text-gray-600 font-medium">
-              Posiciones a facturar: <b class="text-isdin-black">${ord.inyectados}</b> <span class="mx-1.5 text-gray-300">|</span> ${totalsHtml}
+              Posiciones: <b class="text-isdin-black">${totalPos}</b> <span class="mx-1.5 text-gray-300">|</span> ${totalsHtml}
             </p>
           </div>
-          <div class="p-5 divide-y divide-gray-100">
+          <div class="p-5 space-y-4">
       `;
 
-      ord.posiciones.forEach(pos => {
-        let badgeClass = pos.isBackOrder ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800';
-        let badgeText = pos.isBackOrder ? '⚠️ Back Order' : '✅ OK';
-        let subtotalHtml = pos.subtotal > 0 ? ` <span class="mx-1.5 text-gray-300">|</span> Subtotal: <b class="text-gray-800">${formatCOP(pos.subtotal)}</b>` : '';
-
+      // 1. BLOQUE DE ALERTA: AL INICIO (PRODUCTOS NO ACTUALIZADOS)
+      if (ord.posicionesNoActualizadas.length > 0) {
         html += `
-          <div class="py-3 flex items-center justify-between gap-4">
-            <div class="min-w-0 flex-1">
-              <h4 class="font-bold text-isdin-black text-sm mb-0.5 truncate" title="${pos.descripcion}">${pos.descripcion}</h4>
-              <p class="text-xs text-gray-500 font-mono">
-                EAN: ${pos.ean} <span class="mx-1.5 text-gray-300">|</span> 
-                Material SAP: <b class="text-isdin-black">${pos.material}</b> <span class="mx-1.5 text-gray-300">|</span> 
-                Solicitado: <b class="text-gray-700">${pos.unidades} ud.</b>
-                ${subtotalHtml}
-              </p>
+          <div class="bg-red-50 border border-red-200 rounded-xl p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-red-700 font-bold text-xs uppercase tracking-wide">⚠️ Estos productos no se encuentran actualizados en la base de datos:</span>
             </div>
-            <div class="px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${badgeClass}">
-              ${badgeText}
-            </div>
-          </div>
+            <p class="text-xs text-red-600 mb-3">
+              El cliente solicitó las siguientes referencias en la OC pero su código EAN no cruzó con el portafolio activo
+            </p>
+            <div class="divide-y divide-red-200/60 bg-white/70 rounded-lg p-2 border border-red-100">
         `;
-      });
+
+        ord.posicionesNoActualizadas.forEach(pos => {
+          html += `
+            <div class="py-2 px-2 flex items-center justify-between text-xs gap-3">
+              <div>
+                <span class="font-bold text-red-950">${pos.descripcion}</span>
+                <span class="text-red-600 font-mono ml-2">EAN: ${pos.ean}</span>
+              </div>
+              <span class="bg-red-100 text-red-800 font-bold px-2 py-0.5 rounded text-[11px] whitespace-nowrap">${pos.unidades} ud.</span>
+            </div>
+          `;
+        });
+
+        html += `</div></div>`;
+      }
+
+      // 2. LISTADO DE PRODUCTOS CON MATERIAL SAP (OK Y BACK ORDER REAL)
+      const posicionesProcesadas = [...ord.posicionesOk, ...ord.posicionesBO];
+      if (posicionesProcesadas.length > 0) {
+        html += `<div class="divide-y divide-gray-100">`;
+        posicionesProcesadas.forEach(pos => {
+          let badgeClass = pos.isBackOrder ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800';
+          let badgeText = pos.isBackOrder ? '⚠️ Back Order' : '✅ OK';
+          let subtotalHtml = (pos.subtotal > 0) ? ` <span class="mx-1.5 text-gray-300">|</span> Subtotal: <b class="text-gray-800">${formatCOP(pos.subtotal)}</b>` : '';
+
+          html += `
+            <div class="py-3 flex items-center justify-between gap-4">
+              <div class="min-w-0 flex-1">
+                <h4 class="font-bold text-isdin-black text-sm mb-0.5 truncate" title="${pos.descripcion}">${pos.descripcion}</h4>
+                <p class="text-xs text-gray-500 font-mono">
+                  EAN: ${pos.ean} <span class="mx-1.5 text-gray-300">|</span> 
+                  Material SAP: <b class="text-isdin-black">${pos.material}</b> <span class="mx-1.5 text-gray-300">|</span> 
+                  Solicitado: <b class="text-gray-700">${pos.unidades} ud.</b>
+                  ${subtotalHtml}
+                </p>
+              </div>
+              <div class="px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${badgeClass}">
+                ${badgeText}
+              </div>
+            </div>
+          `;
+        });
+        html += `</div>`;
+      }
 
       html += `</div></div>`;
     }

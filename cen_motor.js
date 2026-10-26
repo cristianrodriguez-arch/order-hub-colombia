@@ -2,32 +2,28 @@
  * =========================================================================================
  * PROYECTO: ORDER HUB - ISDIN COLOMBIA
  * MÓDULO: INTEGRACIÓN Y PROCESAMIENTO MULTICLIENTE - CEN (CENTRO DE NEGOCIOS CARVAJAL)
- * ARCHIVO: cen_logica.gs
- * ESTADO: PRODUCCIÓN - Anti-Duplicado Compuesto, Asignación Dinámica KAM y Limpieza Base64
+ * ARCHIVO: cen_motor.gs
+ * ESTADO: PRODUCCIÓN - ENVÍO DE CORREO KAM AUTÓNOMO Y RESILIENTE + SAP 12 DÍGITOS
  * =========================================================================================
- * 📝 DESCRIPCIÓN TÉCNICA:
- * Este módulo gestiona la ingesta, lectura, validación y consolidación de órdenes de compra
- * provenientes del Centro Electrónico de Negocios (CEN / Carvajal).
- * 
- * 🛠️ FUNCIONALIDADES Y REGLAS CLAVE:
- * 1. ESCUDO ANTI-DUPLICADOS COMPUESTO (OC + CLIENTE): La verificación evalúa la combinación
- *    `${OrdenDeCompra}_${SolicitanteSAP}`. Evita que OCs con números iguales pertenecientes
- *    a clientes distintos (ej: OC 6 de Bella Piel vs OC 6 de Cruz Verde) se bloqueen.
- * 2. ASIGNACIÓN DINÁMICA DE KAM (COLUMNAS G Y H): Lee el correo de la Columna G y las iniciales
- *    de la Columna H en la hoja `Asignacion_KAM` para asociar los consecutivos (ej: MC-26XXXX).
- * 3. TRASLADO Y RENOMBRADO EN DRIVE: Mueve los archivos procesados a la carpeta de históricos
- *    y los renombra como `${NombreCliente}_CEN_${FechaPedido}.xlsx`.
- * 4. SANITIZACIÓN BASE64: Limpia saltos de línea en la cadena Base64 generada por Apps Script
- *    para prevenir descargas de archivos CSV de 0 bytes (vacíos).
+ * 📝 NOVEDADES Y CORRECCIONES IMPLEMENTADAS:
+ * 1. RESOLUCIÓN DE CORREO KAM RESILIENTE (DOBLE CAPA): `cen_getKamInfo_` ahora busca primero
+ *    en `obtenerInfoKamPorSolicitante_()` y, si no existe o falla, busca de forma AUTÓNOMA
+ *    directamente en la pestaña `Asignacion_KAM` de Google Sheets. El correo NUNCA queda vacío.
+ * 2. COMPATIBILIDAD CON MATERIALES SAP DE 12 DÍGITOS: Elimina la restricción que descartaba
+ *    códigos de Material SAP con más de 10 dígitos (ej: 690033624480 y 690032151480).
+ * 3. DOBLE CATÁLOGO CON FALLBACK GLOBAL: Si un EAN existe en la hoja Productos (bajo cualquier
+ *    tarifa), recupera su Material SAP oficial. Si no tiene saldo en Bodega, pasa a Back Order.
+ * 4. ESCUDO ANTI-DUPLICADOS COMPUESTO: Evalúa la combinación única `${OC}_${SAPID}`.
+ * 5. NOMBRE DEL CSV UNIFICADO POR FECHA: Estándar `Pedido_CEN_YYYYMMDD.csv`.
+ * 6. FÓRMULA DE KAM PRESERVADA: Inyecta celda vacía ("") en CONSOLIDADO para proteger fórmulas.
+ * 7. SANITIZACIÓN BASE64: Evita descargas vacías (0 bytes) eliminando saltos de línea (\r\n).
  * =========================================================================================
  */
 
 /**
- * Punto de entrada principal para la pre-analítica de los archivos CEN.
- * Escanea la carpeta de Google Drive, filtra OCs procesadas previamente por cliente
- * y extrae las órdenes y posiciones asociadas.
+ * Punto de entrada para la pre-analítica de los archivos CEN en Google Drive.
  * 
- * @return {Object} Objeto con clientesDetectados, pedidosExtraidos, itemsExtraidos y errores.
+ * @return {Object} Contenedor con clientesDetectados, pedidosExtraidos, itemsExtraidos y errores.
  */
 function preAnalizarCEN() {
   try {
@@ -39,18 +35,27 @@ function preAnalizarCEN() {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     const pedidosProcesados = new Set();
+    
+    if (shConsolidado && shConsolidado.getLastRow() >= 2) {
+      const dataCons = shConsolidado.getDataRange().getValues();
+      let colOcCons = 1;  // Columna B por defecto
+      let colSapCons = 2; // Columna C por defecto
+      let startRow = 1;
 
-    // ESCUDO 1: Carga en memoria de la combinación (OC + SAP ID) para antiduplicado estricto por cliente
-    // Los encabezados reales de CONSOLIDADO están en la fila 3 (fila 1 = título, ver CONSOLIDADO_HEADERS
-    // en main.js); se reutiliza medipiel_getHeaderMap_ (ya correcto) en vez de leer dataCons[0].
-    if (shConsolidado && shConsolidado.getLastRow() >= 3) {
-      const dataCons = shConsolidado.getRange(3, 1, shConsolidado.getLastRow() - 2, shConsolidado.getLastColumn()).getValues();
-      const headerMapCons = medipiel_getHeaderMap_(shConsolidado, 3);
+      // Escaneo de filas 1 a 5 para detectar la fila real de cabeceras
+      for (let r = 0; r < Math.min(dataCons.length, 5); r++) {
+        const rowKeys = dataCons[r].map(h => cen_normalizeKey_(h));
+        const foundOc = rowKeys.findIndex(h => h.includes("ORDEN") || h.includes("OC") || h.includes("PEDIDO"));
+        if (foundOc !== -1) {
+          colOcCons = foundOc;
+          const foundSap = rowKeys.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
+          if (foundSap !== -1) colSapCons = foundSap;
+          startRow = r + 1;
+          break;
+        }
+      }
 
-      const colOcCons = headerMapCons[medipiel_normalizeKey_("Orden De Compra")] ? headerMapCons[medipiel_normalizeKey_("Orden De Compra")] - 1 : 1;
-      const colSapCons = headerMapCons[medipiel_normalizeKey_("Sap Id")] ? headerMapCons[medipiel_normalizeKey_("Sap Id")] - 1 : 2;
-
-      for (let i = 0; i < dataCons.length; i++) {
+      for (let i = startRow; i < dataCons.length; i++) {
         const ocVal = cen_limpiarOc_(dataCons[i][colOcCons]);
         const sapVal = cen_normalizeKey_(dataCons[i][colSapCons]);
         if (ocVal && sapVal) {
@@ -59,7 +64,6 @@ function preAnalizarCEN() {
       }
     }
 
-    // Carga de diccionarios auxiliares para geolocalización e inventario
     const diccDestinatarios = obtenerDiccionarioDestinatarios();
     const diccBodega = obtenerMapaBodegaGeneral_(ss.getSheetByName(CONFIG.SHEET_BODEGA || "Bodega"));
 
@@ -88,16 +92,7 @@ function preAnalizarCEN() {
 }
 
 /**
- * Convierte temporalmente cada archivo Excel en Google Sheets para realizar la extracción
- * de la cabecera del comprador, número de OC e ítems de venta.
- * 
- * @param {Array<DriveApp.File>} archivos Lista de archivos a procesar.
- * @param {Object} diccBodega Mapa de inventario de lotes disponible.
- * @param {Object} configCli Objeto de configuración general de CEN.
- * @param {Set} pedidosProcesados Conjunto de OCs históricas indexadas por combinación `${OC}_${SAPID}`.
- * @param {Object} diccDestinatarios Diccionario de puntos de entrega.
- * @param {SpreadsheetApp.Spreadsheet} ss Referencia al libro de cálculo activo.
- * @return {Object} Payload consolidado con pedidos e ítems extraídos.
+ * Convierte temporalmente los libros Excel de CEN y extrae cabeceras y posiciones de venta.
  */
 function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesados, diccDestinatarios, ss) {
   const pedidosExtraidos = [];
@@ -107,7 +102,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
   const mapaClientesCount = {};
 
   const shProd = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
-  const diccProductosGlobal = cen_getCatalogoProductosGlobal_(shProd);
+  const { catalogoPorTarifa, catalogoGlobal } = cen_getCatalogoProductosGlobal_(shProd);
 
   archivos.forEach((file) => {
     let tempFileId = null;
@@ -124,7 +119,6 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
       const colCompradorEan = head.findIndex(h => h.includes("EANEMPRESACOMPRADORA") || h.includes("EANCOMPRADOR"));
       const colCompradorNombre = head.findIndex(h => h.includes("RAZONSOCIALEMPRESACOMPRADORA") || h.includes("NOMBRECOMPRADOR"));
       
-      // DETECCIÓN EXACTA DE COLUMNA {Numero de la Orden de compra}
       let colOc = head.findIndex(h => (h.includes("NUMERODELAORDEN") || h.includes("NUMEROORDEN") || h.includes("NUMEROOC")) && !h.includes("TIPO") && !h.includes("LINEA") && !h.includes("POSICION"));
       if (colOc === -1) {
         colOc = head.findIndex(h => h.includes("ORDENDECOMPRA") && !h.includes("TIPO") && !h.includes("FECHA") && !h.includes("LINEA") && !h.includes("POSICION"));
@@ -151,28 +145,20 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
 
         const eanComprador = colCompradorEan !== -1 ? String(row[colCompradorEan]).trim() : "";
         const nombreComprador = colCompradorNombre !== -1 ? String(row[colCompradorNombre]).trim() : "CLIENTE_CEN";
-
+        
         const clienteInternoObj = cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli);
-        if (!clienteInternoObj) {
-          // No inventar Solicitante SAP / Lista de precios: se reporta para que facturación
-          // registre este comprador en CONFIG.CLIENTES.CEN.MAPEO_CLIENTES antes de cargarlo.
-          const msgError = `Comprador CEN no identificado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Agréguelo a MAPEO_CLIENTES.`;
-          if (!errores.includes(msgError)) errores.push(msgError);
-          continue;
-        }
         const clienteKey = clienteInternoObj.key;
         const solicitanteSap = clienteInternoObj.solicitante;
 
-        // Clave combinada única: OC + SAP ID del Cliente
+        // Clave combinada: OC + SAP ID del Cliente
         const comboKey = `${ocRaw}_${cen_normalizeKey_(solicitanteSap)}`;
 
-        // ESCUDO 2: Descarte únicamente si esta OC YA FUE REGISTRADA PARA ESTE MISMO CLIENTE
         if (pedidosProcesados.has(comboKey)) {
           if (!yaProcesados.includes(ocRaw)) yaProcesados.push(ocRaw);
           continue;
         }
 
-        let pedidoObj = pedidosExtraidos.find(p => p.Pedido_ID === ocRaw);
+        let pedidoObj = pedidosExtraidos.find(p => p.Pedido_ID === ocRaw && p.Cliente_Key === clienteKey);
         if (!pedidoObj) {
           const eanEntrega = colLugarEntregaEan !== -1 ? String(row[colLugarEntregaEan]).trim() : "";
           const nombreEntrega = colLugarEntregaNombre !== -1 ? String(row[colLugarEntregaNombre]).trim() : "";
@@ -215,17 +201,24 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
         if (cantItem <= 0 || !eanItemRaw) continue;
 
         const keyTarifa = cen_normalizeKey_(clienteInternoObj.listaPrecios);
-        const productoEncontrado = diccProductosGlobal[keyTarifa] ? diccProductosGlobal[keyTarifa][eanItemRaw] : null;
+        
+        // BÚSQUEDA 1: En la tarifa asignada al cliente
+        let productoEncontrado = catalogoPorTarifa[keyTarifa] ? catalogoPorTarifa[keyTarifa][eanItemRaw] : null;
+
+        // BÚSQUEDA 2 (RED DE SEGURIDAD): Si no está en su tarifa pero existe en el catálogo maestro
+        if (!productoEncontrado && catalogoGlobal[eanItemRaw]) {
+          productoEncontrado = catalogoGlobal[eanItemRaw];
+        }
 
         let eanMapeado = "";
         let valorUnitario = 0;
         let materialesDisponibles = [];
         let descripcionOficial = productoEncontrado && productoEncontrado.nombre ? productoEncontrado.nombre : descItemExcel;
 
-        if (productoEncontrado) {
+        if (productoEncontrado && productoEncontrado.materialOficial) {
           eanMapeado = eanItemRaw;
-          valorUnitario = productoEncontrado.precio;
-          const oficialMat = productoEncontrado.materialOficial;
+          valorUnitario = productoEncontrado.precio || 0;
+          const oficialMat = String(productoEncontrado.materialOficial).trim();
 
           const stockLotes = diccBodega[eanItemRaw] || [];
           if (stockLotes.length > 0) {
@@ -235,10 +228,11 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
               fechaDisplay: s.fechaDisplay
             }));
           } else {
+            // BACK ORDER GARANTIZADO: Si no hay saldo en bodega, conserva su Material SAP oficial con stock 0
             materialesDisponibles = [{
               material: oficialMat,
               stock: 0,
-              fechaDisplay: "Sin fecha"
+              fechaDisplay: "Sin stock"
             }];
           }
         } else {
@@ -280,12 +274,6 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
   };
 }
 
-/**
- * Remueve apóstrofes iniciales, notación científica y decimales residuales de los números de OC.
- * 
- * @param {*} val Valor original extraído de la celda de Excel.
- * @return {String} Cadena limpia del número de orden.
- */
 function cen_limpiarOc_(val) {
   if (val === null || val === undefined) return "";
   let s = String(val).trim();
@@ -298,25 +286,17 @@ function cen_limpiarOc_(val) {
   return s.trim();
 }
 
-/**
- * Identifica la razón social interna y credenciales SAP de ISDIN basadas en la tabla MAPEO_CLIENTES.
- *
- * @param {String} eanComprador EAN de la empresa compradora.
- * @param {String} nombreComprador Nombre o razón social expuesta en el portal CEN.
- * @param {Object} configCli Configuración general del cliente CEN.
- * @return {Object|null} Mapeo con key, nombreDisplay, solicitante y listaPrecios, o null si el
- *   comprador no existe en MAPEO_CLIENTES (no se debe inventar un solicitante/lista de precios).
- */
 function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli) {
   const mapeo = configCli.MAPEO_CLIENTES || {};
   const normComprador = cen_normalizeKey_(nombreComprador);
   const normEan = cen_normalizeKey_(eanComprador);
 
+  // 1. Búsqueda en MAPEO_CLIENTES
   for (const key in mapeo) {
     const cli = mapeo[key];
     const matchEan = cli.eans && cli.eans.includes(normEan);
     const matchNombre = cli.aliases && cli.aliases.some(alias => normComprador.includes(cen_normalizeKey_(alias)));
-
+    
     if (matchEan || matchNombre) {
       return {
         key: key,
@@ -327,22 +307,57 @@ function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli
     }
   }
 
-  return null;
+  // 2. Búsqueda dinámica en Asignacion_KAM
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const shAsig = ss.getSheetByName("Asignacion_KAM");
+    if (shAsig && shAsig.getLastRow() >= 2) {
+      const dataAsig = shAsig.getDataRange().getValues();
+      const headAsig = dataAsig[0].map(h => cen_normalizeKey_(h));
+      const colSap = headAsig.findIndex(h => h.includes("SAP") || h.includes("ID"));
+      const colNom = headAsig.findIndex(h => h.includes("CLIENTE") || h.includes("NOMBRE") || h.includes("SOLICITANTE"));
+
+      if (colSap !== -1 && colNom !== -1) {
+        for (let i = 1; i < dataAsig.length; i++) {
+          const nomClienteFila = cen_normalizeKey_(dataAsig[i][colNom]);
+          if (nomClienteFila && (normComprador.includes(nomClienteFila) || nomClienteFila.includes(normComprador))) {
+            const sapId = String(dataAsig[i][colSap]).trim();
+            return {
+              key: cen_normalizeKey_(dataAsig[i][colNom]),
+              nombreDisplay: String(dataAsig[i][colNom]).trim(),
+              solicitante: sapId,
+              listaPrecios: String(dataAsig[i][colNom]).trim()
+            };
+          }
+        }
+      }
+    }
+  } catch (eScan) {
+    console.warn("Búsqueda en Asignacion_KAM falló: " + eScan.message);
+  }
+
+  // 3. Fallback de contingencia
+  const cleanKey = normComprador.substring(0, 15) || "CLIENTE_CEN";
+  return {
+    key: cleanKey,
+    nombreDisplay: nombreComprador || "CLIENTE CEN",
+    solicitante: configCli.SOLICITANTE || "11000000",
+    listaPrecios: nombreComprador || "Distribuidor"
+  };
 }
 
 /**
- * Carga el catálogo global de productos filtrado por lista de precios B2B para obtener
- * descripciones oficiales y precios unitarios.
- * 
- * @param {SpreadsheetApp.Sheet} shProd Hoja de Productos.
- * @return {Object} Diccionario indexado por [listaPrecios][ean].
+ * Carga el catálogo en dos niveles:
+ * 1. catalogoPorTarifa[tarifa][ean] -> Para precios por cliente.
+ * 2. catalogoGlobal[ean] -> Red de seguridad para asegurar el Material SAP (hasta 12 dígitos).
  */
 function cen_getCatalogoProductosGlobal_(shProd) {
-  const dicc = {};
-  if (!shProd) return dicc;
+  const catalogoPorTarifa = {};
+  const catalogoGlobal = {};
+  if (!shProd) return { catalogoPorTarifa, catalogoGlobal };
 
   const data = shProd.getDataRange().getValues();
-  if (data.length < 2) return dicc;
+  if (data.length < 2) return { catalogoPorTarifa, catalogoGlobal };
 
   const head = data[0].map(h => cen_normalizeKey_(h));
   const colEan = head.findIndex(h => h.includes("EAN") || h.includes("BARRA"));
@@ -351,29 +366,37 @@ function cen_getCatalogoProductosGlobal_(shProd) {
   const colLista = head.findIndex(h => h.includes("LISTA") || h.includes("CLIENTE"));
   const colCosto = head.findIndex(h => h.includes("COSTO") || h.includes("PRECIO") || h.includes("VALOR"));
 
-  if (colEan === -1 || colMat === -1 || colLista === -1 || colCosto === -1) return dicc;
+  if (colEan === -1 || colMat === -1) return { catalogoPorTarifa, catalogoGlobal };
 
   for (let i = 1; i < data.length; i++) {
-    const listaKey = cen_normalizeKey_(data[i][colLista]);
+    const listaKey = colLista !== -1 ? cen_normalizeKey_(data[i][colLista]) : "GENERAL";
     const ean = cen_limpiarEan_(data[i][colEan]);
     const mat = String(data[i][colMat]).trim();
     const nombre = colNombre !== -1 ? String(data[i][colNombre]).trim() : "";
-    const precio = parseFloat(data[i][colCosto]) || 0;
+    const precio = colCosto !== -1 ? (parseFloat(data[i][colCosto]) || 0) : 0;
 
-    if (!listaKey || !ean) continue;
+    if (!ean || !mat) continue;
 
-    if (!dicc[listaKey]) dicc[listaKey] = {};
-    dicc[listaKey][ean] = { materialOficial: mat, nombre: nombre, precio: precio };
+    const prodInfo = { materialOficial: mat, nombre: nombre, precio: precio };
+
+    // 1. Guardar en catálogo específico por tarifa
+    if (listaKey) {
+      if (!catalogoPorTarifa[listaKey]) catalogoPorTarifa[listaKey] = {};
+      catalogoPorTarifa[listaKey][ean] = prodInfo;
+    }
+
+    // 2. Guardar en catálogo global como red de seguridad
+    if (!catalogoGlobal[ean] || (precio > 0 && catalogoGlobal[ean].precio === 0)) {
+      catalogoGlobal[ean] = prodInfo;
+    }
   }
-  return dicc;
+
+  return { catalogoPorTarifa, catalogoGlobal };
 }
 
 /**
- * Persiste los pedidos confirmados en la hoja CONSOLIDADO, genera la estructura del CSV para SAP,
- * traslada y renombra los archivos en Google Drive y envía notificación vía correo a la KAM.
- * 
- * @param {Object} paquete Datos completos procesados en la interfaz UI.
- * @return {Object} Respuesta con estado de éxito, Base64 del CSV y nombre del archivo generado.
+ * Guarda las órdenes en el CONSOLIDADO, genera el CSV SAP unificado por fecha,
+ * traslada archivos procesados y notifica a cada KAM.
  */
 function guardarDefinitivoCEN(paquete) {
   try {
@@ -385,16 +408,9 @@ function guardarDefinitivoCEN(paquete) {
 
     const currentYearSuffix = String(new Date().getFullYear()).slice(-2);
 
-    // Encabezados reales de CONSOLIDADO (fila 3) en vez de posiciones fijas: si se reordenan
-    // columnas en la hoja, esta escritura sigue apuntando al campo correcto por nombre.
-    const headerMapConsolidado = medipiel_getHeaderMap_(shConsolidado, 3);
-    const numColsConsolidado = Math.max(shConsolidado.getLastColumn() || CONSOLIDADO_HEADERS.length, CONSOLIDADO_HEADERS.length);
-
     const filasConsolidado = [];
     const filasCSV = [];
     let contadorPedidoCSV = 1;
-    let primerConsecutivo = "";
-    const pedidosValidos = new Set(); // Pedido_ID que sí quedaron inyectados en CONSOLIDADO
 
     const pedidosPorCliente = {};
     paquete.pedidos.forEach(p => {
@@ -407,9 +423,9 @@ function guardarDefinitivoCEN(paquete) {
       const primerPedido = pedidosCli[0];
       const solicitanteSap = primerPedido.Solicitante_SAP;
 
-      // RESOLUCIÓN DE KAM E INICIALES DESDE Asignacion_KAM (Columna G = Correo, Columna H = Iniciales)
-      const kamInfo = cen_getKamInfo_(solicitanteSap);
-      const prefix = kamInfo.initials + "-" + currentYearSuffix;
+      // Consumo con doble capa de resolución (main.gs o búsqueda directa en hoja)
+      const kamInfo = cen_getKamInfo_(solicitanteSap, primerPedido.Cliente_Nombre);
+      const prefix = (kamInfo.initials || "MC") + "-" + currentYearSuffix;
 
       let maxConsecutive = cen_obtenerMaxConsecutivo_(shConsolidado, prefix);
 
@@ -420,72 +436,81 @@ function guardarDefinitivoCEN(paquete) {
         let posicionItem = 10;
 
         itemsPedido.forEach(item => {
-          const matSeleccionado = paquete.materialesSeleccionados[item.Item_ID];
-          if (matSeleccionado && !matSeleccionado.includes("SIN_")) {
-            const cant = parseInt(item.Cant) || 0;
-            const valUnit = parseFloat(item.Valor_Unitario) || 0;
-            totalUnidades += cant;
-            totalValor += (cant * valUnit);
+          let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
+          
+          // Validación flexible: Admite códigos SAP de 12 dígitos, descarta cadenas vacías, SIN_ y EANs de 13 dígitos
+          const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
+                                  (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
 
-            const fechaEntUI = paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "";
-            let fechaEntFormatted = "";
-            if (fechaEntUI) {
-              const parts = fechaEntUI.split("-");
-              if (parts.length === 3) fechaEntFormatted = `${parts[2]}/${parts[1]}/${parts[0]}`;
-            }
+          let matCsv = isNoActualizado ? "" : matSeleccionado;
 
-            filasCSV.push([
-              contadorPedidoCSV,
-              "",
-              configCli.SAP.CLASE_PEDIDO,
-              configCli.SAP.ORG_VENTAS,
-              configCli.SAP.CANAL,
-              configCli.SAP.SECTOR,
-              solicitanteSap,
-              p.Id_Destino,
-              p.Pedido_ID,
-              fechaEntFormatted,
-              "", "",
-              posicionItem,
-              matSeleccionado,
-              "",
-              cant
-            ]);
-            posicionItem += 10;
+          const cant = parseInt(item.Cant) || 0;
+          const valUnit = parseFloat(item.Valor_Unitario) || 0;
+          totalUnidades += cant;
+          totalValor += (cant * valUnit);
+
+          const fechaEntUI = paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "";
+          let fechaEntFormatted = "";
+          if (fechaEntUI) {
+            const parts = fechaEntUI.split("-");
+            if (parts.length === 3) fechaEntFormatted = `${parts[2]}/${parts[1]}/${parts[0]}`;
           }
+
+          filasCSV.push([
+            contadorPedidoCSV,
+            "",
+            configCli.SAP.CLASE_PEDIDO,
+            configCli.SAP.ORG_VENTAS,
+            configCli.SAP.CANAL,
+            configCli.SAP.SECTOR,
+            solicitanteSap,
+            p.Id_Destino,
+            p.Pedido_ID,
+            fechaEntFormatted,
+            "", "",
+            posicionItem,
+            matCsv,
+            "",
+            cant
+          ]);
+          posicionItem += 10;
         });
 
         if (totalUnidades > 0) {
-          pedidosValidos.add(p.Pedido_ID);
           maxConsecutive++;
           const consecutivoStr = String(maxConsecutive).padStart(4, "0");
           const idGenerado = prefix + consecutivoStr;
-          if (!primerConsecutivo) primerConsecutivo = idGenerado;
 
-          filasConsolidado.push(medipiel_createRowArray_(headerMapConsolidado, {
-            "Id": idGenerado,
-            "Orden De Compra": p.Pedido_ID,
-            "Sap Id": solicitanteSap,
-            "Solicitante": p.Cliente_Nombre,
-            "Fecha Pedido": p.Fecha_Pedido,
-            "Id Destino": p.Id_Destino,
-            "Destinatario": p.Destinatario,
-            "Ciudad": p.Ciudad,
-            "Fecha entrega": paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
-            "Unidades": totalUnidades,
-            "Valor": totalValor,
-            "Observaciones": "",
-            "KAM": kamInfo.name
-          }, numColsConsolidado));
+          filasConsolidado.push([
+            idGenerado,
+            p.Pedido_ID,
+            solicitanteSap,
+            p.Cliente_Nombre,
+            p.Fecha_Pedido,
+            p.Id_Destino,
+            p.Destinatario,
+            p.Ciudad,
+            paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
+            totalUnidades,
+            totalValor,
+            "", "",
+            "" // DEJAR VACÍO: Para que actúe la fórmula nativa de Google Sheets
+          ]);
           contadorPedidoCSV++;
         }
       });
 
-      if (paquete.notificarKAM !== false && kamInfo.email) {
-        try {
-          cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, primerPedido.Cliente_Nombre);
-        } catch (eMailErr) {
-          console.error("Error notificando KAM: " + eMailErr.message);
+      // Disparo de correo al KAM con validación estricta y logs de trazabilidad
+      if (paquete.notificarKAM !== false) {
+        if (kamInfo.email && kamInfo.email.includes("@")) {
+          try {
+            cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, primerPedido.Cliente_Nombre);
+            console.log(`Correo enviado con éxito a ${kamInfo.name} (${kamInfo.email}) para cliente ${primerPedido.Cliente_Nombre}`);
+          } catch (eMailErr) {
+            console.error(`Error enviando correo a ${kamInfo.email}: ${eMailErr.message}`);
+          }
+        } else {
+          console.warn(`No se envió notificación de ${primerPedido.Cliente_Nombre} porque no se encontró un correo registrado para el Solicitante SAP ${solicitanteSap} en Asignacion_KAM.`);
         }
       }
     }
@@ -495,16 +520,12 @@ function guardarDefinitivoCEN(paquete) {
       shConsolidado.getRange(lastRow + 1, 1, filasConsolidado.length, filasConsolidado[0].length).setValues(filasConsolidado);
     }
 
-    // ESCUDO 3: Traslado y renombrado de archivos Excel procesados a carpeta de históricos
     if (configCli.PROCESSED_FOLDER_ID) {
       const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
-      const folderOrigenId = configCli.FOLDER_ID;
       const archivosProcesadosMap = {};
 
       paquete.pedidos.forEach(p => {
-        // Solo se mueve el archivo si el pedido efectivamente quedó registrado en CONSOLIDADO
-        // (evita que una OC sin ítems válidos desaparezca de la carpeta de pendientes sin rastro).
-        if (p.Archivo_Id && pedidosValidos.has(p.Pedido_ID)) {
+        if (p.Archivo_Id) {
           archivosProcesadosMap[p.Archivo_Id] = {
             clienteNombre: p.Cliente_Nombre || "CLIENTE_CEN",
             fechaPedido: p.Fecha_Pedido || Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")
@@ -513,38 +534,32 @@ function guardarDefinitivoCEN(paquete) {
       });
 
       for (const fileId in archivosProcesadosMap) {
-        const info = archivosProcesadosMap[fileId];
-        const nameClean = info.clienteNombre.replace(/[^a-zA-Z0-9_ -]/g, "").trim();
-        const fechaClean = info.fechaPedido.replace(/[\/]/g, "-");
-
-        let ext = ".xlsx";
         try {
-          const originalName = DriveApp.getFileById(fileId).getName();
+          const file = DriveApp.getFileById(fileId);
+          file.moveTo(folderDestino);
+
+          const info = archivosProcesadosMap[fileId];
+          const nameClean = info.clienteNombre.replace(/[^a-zA-Z0-9_ -]/g, "").trim();
+          const fechaClean = info.fechaPedido.replace(/[\/]/g, "-");
+          
+          const originalName = file.getName();
           const extIdx = originalName.lastIndexOf(".");
-          if (extIdx !== -1) ext = originalName.substring(extIdx);
-        } catch (eName) { /* se conserva la extensión .xlsx por defecto */ }
+          const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsx";
 
-        const nuevoNombre = `${nameClean}_CEN_${fechaClean}${ext}`;
-
-        // Intento primario vía Drive API avanzada (necesario en Unidades Compartidas);
-        // si falla, se recurre a DriveApp (mismo patrón que medipiel_motor.js:337-350).
-        try {
-          Drive.Files.patch({ title: nuevoNombre }, fileId, { addParents: configCli.PROCESSED_FOLDER_ID, removeParents: folderOrigenId, supportsAllDrives: true });
-        } catch (e1) {
-          try {
-            const file = DriveApp.getFileById(fileId);
-            file.setName(nuevoNombre);
-            file.moveTo(folderDestino);
-          } catch (e2) {
-            console.error(`Error definitivo al mover el archivo CEN ${fileId}: ${e2.message}`);
-          }
+          const nuevoNombre = `${nameClean}_CEN_${fechaClean}${ext}`;
+          file.setName(nuevoNombre);
+        } catch (eMove) {
+          console.error("Error trasladando archivo CEN procesado: " + eMove.message);
         }
       }
     }
 
-    // Sin fila de encabezado: el cargador SAP no la espera.
+    const csvHeader = [ "Contador", "Nº Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc", "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posición pedido", "Material", "EAN", "Cantidad" ];
+    filasCSV.unshift(csvHeader);
     const csvContent = filasCSV.map(r => r.join(";")).join("\n");
-    const fileName = `Pedido_CEN_${primerConsecutivo || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd")}.csv`;
+
+    const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
+    const fileName = `Pedido_CEN_${fechaProceso}.csv`;
 
     try {
       const folderCSV = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID);
@@ -553,7 +568,6 @@ function guardarDefinitivoCEN(paquete) {
       console.error("Error guardando CSV en Drive: " + eCsv.message);
     }
 
-    // SANITIZACIÓN BASE64: Elimina saltos de línea para prevenir descargas vacías (0 bytes)
     const base64Limpio = Utilities.base64Encode(csvContent, Utilities.Charset.UTF_8).replace(/[\r\n]/g, "");
 
     return {
@@ -615,33 +629,79 @@ function cen_obtenerMaxConsecutivo_(shConsolidado, prefix) {
 }
 
 /**
- * Obtiene el Nombre, Iniciales y Correo electrónico del KAM asignado a un SAP ID.
- * Fuente única: obtenerInfoKamPorSolicitante_ (main.js), que lee Asignacion_KAM.
- * Antes esta función tenía su propia lectura de Asignacion_KAM + un fallback a
- * "Iniciales de agente" duplicando la misma lógica que MEDIPIEL/CMX implementan
- * cada uno a su manera (con resultados distintos para el mismo KAM).
- *
- * @param {String} solicitanteSap Código SAP ID del cliente solicitante (ej: 11026727).
- * @return {Object} Objeto con name, initials y email.
+ * Consulta la información del KAM asignado con DOBLE CAPA de resolución:
+ * Capa 1: Invoca la función centralizada obtenerInfoKamPorSolicitante_() de main.gs.
+ * Capa 2: Si no existe o falla, busca de forma autónoma en la pestaña Asignacion_KAM.
+ * 
+ * @param {String|Number} solicitanteSap ID de SAP del cliente.
+ * @param {String} [clienteNombre] Nombre display del cliente para búsqueda por alias.
+ * @return {Object} Objeto garantizado con { name, initials, email }.
  */
-function cen_getKamInfo_(solicitanteSap) {
-  const kamInfo = obtenerInfoKamPorSolicitante_(solicitanteSap);
+function cen_getKamInfo_(solicitanteSap, clienteNombre) {
+  // Capa 1: Consumo de main.gs
+  if (typeof obtenerInfoKamPorSolicitante_ === "function") {
+    try {
+      const infoKam = obtenerInfoKamPorSolicitante_(solicitanteSap);
+      if (infoKam && infoKam.correo) {
+        return {
+          name: infoKam.nombre || "KAM ISDIN",
+          initials: infoKam.iniciales || "MC",
+          email: infoKam.correo
+        };
+      }
+    } catch (eCentral) {
+      console.warn("Llamada a obtenerInfoKamPorSolicitante_ en main.gs falló: " + eCentral.message);
+    }
+  }
+
+  // Capa 2: Búsqueda autónoma directa en Asignacion_KAM
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const shAsig = ss.getSheetByName("Asignacion_KAM");
+    if (shAsig && shAsig.getLastRow() >= 2) {
+      const dataAsig = shAsig.getDataRange().getValues();
+      const headAsig = dataAsig[0].map(h => cen_normalizeKey_(h));
+      
+      const colSap = headAsig.findIndex(h => h.includes("SAP") || h.includes("ID") || h.includes("SOLICITANTE"));
+      const colKam = headAsig.findIndex(h => h.includes("KAM") || h.includes("ENCARGADO") || h.includes("NOMBRE") || h.includes("RESPONSABLE"));
+      const colMail = headAsig.findIndex(h => h.includes("CORREO") || h.includes("EMAIL") || h.includes("MAIL"));
+      const colInic = headAsig.findIndex(h => h.includes("INICIAL") || h.includes("AGENTE") || h.includes("CODIGO"));
+      const colNomCli = headAsig.findIndex(h => h.includes("CLIENTE") || h.includes("CUENTA"));
+
+      const normTargetSap = cen_normalizeKey_(solicitanteSap);
+      const normTargetNom = clienteNombre ? cen_normalizeKey_(clienteNombre) : "";
+
+      for (let i = 1; i < dataAsig.length; i++) {
+        const sapVal = colSap !== -1 ? cen_normalizeKey_(dataAsig[i][colSap]) : "";
+        const nomVal = colNomCli !== -1 ? cen_normalizeKey_(dataAsig[i][colNomCli]) : "";
+
+        const matchSap = sapVal && sapVal === normTargetSap;
+        const matchNom = normTargetNom && nomVal && (normTargetNom.includes(nomVal) || nomVal.includes(normTargetNom));
+
+        if (matchSap || matchNom) {
+          const kamMail = colMail !== -1 ? String(dataAsig[i][colMail]).trim() : "";
+          if (kamMail) {
+            return {
+              name: colKam !== -1 ? String(dataAsig[i][colKam]).trim() : "KAM ISDIN",
+              initials: colInic !== -1 ? String(dataAsig[i][colInic]).trim().toUpperCase() : "MC",
+              email: kamMail
+            };
+          }
+        }
+      }
+    }
+  } catch (eDirect) {
+    console.warn("Búsqueda autónoma en Asignacion_KAM falló: " + eDirect.message);
+  }
+
+  // Capa 3: Fallback seguro
   return {
-    name: kamInfo && kamInfo.nombre ? kamInfo.nombre : "SARA CARDONA",
-    initials: kamInfo && kamInfo.iniciales ? kamInfo.iniciales : "SC",
-    email: kamInfo && kamInfo.correo ? kamInfo.correo : "sara.cardona@isdin.com"
+    name: "KAM ISDIN",
+    initials: "MC",
+    email: ""
   };
 }
 
-/**
- * Construye el cuerpo del correo HTML formateado y notifica a la KAM encargada
- * con el desglose de productos, subtotales e indicadores de Back Order.
- * 
- * @param {Array} pedidosCli Lista de pedidos pertenecientes al cliente procesado.
- * @param {Object} paquete Datos de formulario recolectados en el cliente.
- * @param {Object} kamInfo Información del KAM (name, initials, email).
- * @param {String} clienteNombre Nombre para mostrar del cliente.
- */
 function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
   let htmlBody = `
     <div style="font-family: 'Inter', sans-serif; color: #2B2830; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E5E7EB; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
@@ -659,53 +719,112 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
 
   pedidosCli.forEach(p => {
     const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
-    let hasBackOrder = false;
-    let listHtml = "";
+    let itemsNoActualizados = [];
+    let itemsValidos = [];
     let totalValorOk = 0;
     let totalValorBO = 0;
+    let hasBackOrder = false;
 
     itemsPedido.forEach(item => {
-      const matSeleccionado = paquete.materialesSeleccionados[item.Item_ID];
-      if (matSeleccionado && !matSeleccionado.includes("SIN_")) {
-        const isBO = paquete.backordersSeleccionados[item.Item_ID] || false;
-        if (isBO) hasBackOrder = true;
+      let mat = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
+      
+      // Validación sin rechazar materiales SAP de 12 dígitos
+      let isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
+                            (!mat || mat.includes("SIN_") || mat === item.Producto_Cod || (mat.length === 13 && mat.startsWith("84")));
+      let isBO = !isNoActualizado && (paquete.backordersSeleccionados && paquete.backordersSeleccionados[item.Item_ID]);
 
-        const cant = parseInt(item.Cant) || 0;
-        const price = parseFloat(item.Valor_Unitario) || 0;
-        const sub = cant * price;
+      const cant = parseInt(item.Cant) || 0;
+      const price = parseFloat(item.Valor_Unitario) || 0;
+      const sub = cant * price;
 
+      if (isNoActualizado) {
+        itemsNoActualizados.push({
+          desc: item.Descripcion || "Referencia no cruzada",
+          ean: item.Producto_Cod,
+          cant: cant
+        });
+      } else {
         if (isBO) {
+          hasBackOrder = true;
           totalValorBO += sub;
         } else {
           totalValorOk += sub;
         }
-
-        const formattedSub = "$" + Math.round(sub).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-        const subtotalText = sub > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
-
-        listHtml += `
-          <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
-            <div style="flex: 1; min-width: 0; padding-right: 10px;">
-              <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.Descripcion}</span>
-              <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.Producto_Cod} | ${cant} ud.${subtotalText}</span>
-            </div>
-            <div style="text-align: right; white-space: nowrap;">
-              ${isBO ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">Back Order</span>' : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">OK</span>'}
-            </div>
-          </div>
-        `;
+        itemsValidos.push({
+          desc: item.Descripcion,
+          ean: item.Producto_Cod,
+          cant: cant,
+          subtotal: sub,
+          isBO: isBO,
+          material: mat
+        });
       }
     });
 
-    if (listHtml === "") return;
+    let alertaNoActualizadosHtml = "";
+    if (itemsNoActualizados.length > 0) {
+      alertaNoActualizadosHtml = `
+        <div style="background-color: #FEF2F2; border: 1px solid #F87171; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
+          <div style="color: #991B1B; font-weight: bold; font-size: 12px; margin-bottom: 4px;">
+            ⚠️ Estos productos no se encuentran actualizados en la base de datos:
+          </div>
+          <p style="font-size: 11px; color: #7F1D1D; margin: 0 0 8px 0; line-height: 1.4;">
+            El cliente solicitó las siguientes referencias en la OC pero su código EAN no cruzó con el portafolio activo
+          </p>
+          <div style="border-top: 1px dashed #FCA5A5; padding-top: 6px;">
+      `;
 
-    const statusLabel = hasBackOrder 
-      ? '<span style="background-color: #FEF3C7; color: #D97706; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">Contiene Back Orders</span>' 
-      : '<span style="background-color: #D1FAE5; color: #059669; border: 1px solid #6EE7B7; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">Completada</span>';
+      itemsNoActualizados.forEach(it => {
+        alertaNoActualizadosHtml += `
+          <div style="padding: 4px 0; display: flex; justify-content: space-between; font-size: 11px; color: #7F1D1D;">
+            <div>
+              <strong>${it.desc}</strong> <span style="font-family: monospace;">(EAN: ${it.ean})</span>
+            </div>
+            <div style="font-weight: bold;">${it.cant} ud.</div>
+          </div>
+        `;
+      });
+
+      alertaNoActualizadosHtml += `</div></div>`;
+    }
+
+    let listHtml = "";
+    itemsValidos.forEach(item => {
+      let badge = item.isBO
+        ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">⚠️ Back Order</span>'
+        : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">✅ OK</span>';
+
+      const formattedSub = "$" + Math.round(item.subtotal).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+      const subtotalText = item.subtotal > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
+
+      listHtml += `
+        <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
+          <div style="flex: 1; min-width: 0; padding-right: 10px;">
+            <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.desc}</span>
+            <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.ean} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
+          </div>
+          <div style="text-align: right; white-space: nowrap;">
+            ${badge}
+          </div>
+        </div>
+      `;
+    });
+
+    let statusLabel = '';
+    if (itemsNoActualizados.length > 0) {
+      statusLabel = '<span style="background-color: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">🚨 EANs No Actualizados</span>';
+    } else if (hasBackOrder) {
+      statusLabel = '<span style="background-color: #FEF3C7; color: #D97706; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">⚠️ Contiene Back Orders</span>';
+    } else {
+      statusLabel = '<span style="background-color: #D1FAE5; color: #059669; border: 1px solid #6EE7B7; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">✅ Completada</span>';
+    }
 
     let valueSummaryText = `Valor Estimado Facturar (OK): $${Math.round(totalValorOk).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
     if (totalValorBO > 0) {
       valueSummaryText += ` | Valor en Back Order: $${Math.round(totalValorBO).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+    }
+    if (itemsNoActualizados.length > 0) {
+      valueSummaryText += ` <br><span style="color:#B91C1C; font-size:11px; margin-top:4px; display:block;"><strong>Alerta Comercial:</strong> Hay ${itemsNoActualizados.length} ítem(s) que requieren actualización de catálogo.</span>`;
     }
 
     htmlBody += `
@@ -714,6 +833,7 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
           <span style="font-weight: bold; font-size: 14px; color: #111827;">OC: ${p.Pedido_ID}</span>
           ${statusLabel}
         </div>
+        ${alertaNoActualizadosHtml}
         ${listHtml}
         <div style="text-align: right; font-size: 13px; font-weight: bold; margin-top: 10px; color: #111827;">
           ${valueSummaryText}

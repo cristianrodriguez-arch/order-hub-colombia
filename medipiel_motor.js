@@ -3,31 +3,21 @@
  * PROYECTO: ORDER HUB - ISDIN COLOMBIA
  * MÓDULO: INTEGRACIÓN Y PROCESAMIENTO DE ÓRDENES DE COMPRA - MEDIPIEL S.A.S. (PDF)
  * ARCHIVO: medipiel_logica.gs
- * ESTADO: VERSION_CONTROL_MEDIPIEL_V15_FULLY_VALORIZED_PROD
+ * ESTADO: PRODUCCIÓN - SOPORTE MATERIALES SAP 12 DÍGITOS, KAM DESACOPLADO Y EAN 13 DÍGITOS
  * =========================================================================================
- * 📝 RESUMEN EJECUTIVO Y FUNCIONALIDAD:
- * Este módulo gestiona de forma desacoplada la extracción de texto mediante OCR/conversión
- * nativa de los pedidos en PDF de Medipiel S.A.S. en Google Drive.
- * 
- * 🛠️ CAPACIDADES CLAVE IMPLEMENTADAS:
- * 1. DESACOPLAMIENTO DE CONFIGURACIÓN: Consume IDs de libros, carpetas y parámetros SAP
- *    directamente desde el objeto CONFIG global definido en main.gs.
- * 2. GEOLOCALIZACIÓN NATIVA (COLUMNA F): Extrae la ciudad real de entrega directamente desde
- *    la Columna F ("Ciudad") de la pestaña "Destinatarios" para registrarla en el Consolidado.
- * 3. VALORIZACIÓN FINANCIERA TOTAL (KAM): Calcula y formatea los subtotales en $ COP
- *    tanto para referencias en estado OK como para ítems en Back Order en el correo notificador.
- * 4. CONSECUTIVO DINÁMICO SANANIZADO: Mantiene la secuencia por agente (ej. SC-260001) y
- *    deja limpia ("") la columna de KAM en el Consolidado.
+ * 📝 REGLAS Y CORRECCIONES APLICADAS:
+ * 1. COMPATIBILIDAD CON MATERIALES SAP DE 12 DÍGITOS: Se eliminó la condición `length > 10`
+ *    tanto en la generación del CSV como en el correo a la KAM, permitiendo códigos oficiales
+ *    de hasta 12 dígitos (ej: 690032151480 / Ureadin Cream10).
+ * 2. EAN ESTRICTO (13 DÍGITOS): En `medipiel_parseItems_` se mantiene estrictamente la
+ *    captura de códigos de barras de 13 dígitos (\d{13}).
+ * 3. KAM 100% DESACOPLADO: Invoca `obtenerInfoKamPorSolicitante_()` de main.gs sin datos fijos.
+ * 4. ESCUDO ANTI-DUPLICADOS COMPUESTO: Evalúa la combinación única `${OC}_${SAPID}`.
+ * 5. FÓRMULA DE KAM PRESERVADA: En CONSOLIDADO, la columna KAM se deja vacía ("") para
+ *    respetar la fórmula nativa de Google Sheets.
  * =========================================================================================
  */
 
-/**
- * FUNCIÓN 1: PRE-ANALIZAR (Punto de entrada llamado desde la UI para escanear PDFs)
- * Escanea la carpeta de entrada de Medipiel, valida órdenes existentes para evitar
- * duplicados y extrae la cabecera y tabla de productos.
- * 
- * @return {Object} Objeto con pedidosExtraidos e itemsExtraidos.
- */
 function preAnalizarMEDIPIEL() {
   const cliente = 'MEDIPIEL';
   const configCli = CONFIG.CLIENTES[cliente];
@@ -35,35 +25,37 @@ function preAnalizarMEDIPIEL() {
     throw new Error('La configuración de MEDIPIEL no está definida en CONFIG de main.gs');
   }
 
-  // 1. Conexión centralizada al libro de cálculo
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
 
-  // 2. Cargar diccionarios de soporte
   const shBodega = ss.getSheetByName(CONFIG.SHEET_BODEGA || "Bodega");
   const diccBodega = shBodega ? obtenerMapaBodegaGeneral_(shBodega) : {};
 
   const shProductos = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
   const diccProductos = shProductos ? medipiel_getProductosMap_(shProductos) : {};
 
-  // Obtener diccionario de destinatarios con soporte para Columna F (Ciudad)
   const diccDestinatarios = obtenerDiccionarioDestinatarios();
 
-  // 3. Antiduplicados: Cargar OCs procesadas previamente en el Consolidado
+  // Antiduplicados: Cargar OCs procesadas previamente en el Consolidado con clave compuesta
   let pedidosProcesados = new Set();
   const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+  
   if (shConsolidado && shConsolidado.getLastRow() >= 3) {
     const mapConsolidado = medipiel_getHeaderMap_(shConsolidado, 3);
     const colOC = mapConsolidado[medipiel_normalizeKey_("Orden De Compra")];
+    const colSap = mapConsolidado[medipiel_normalizeKey_("Sap Id")];
+    
     if (colOC) {
       const dataRange = shConsolidado.getRange(3, 1, shConsolidado.getLastRow() - 2, Math.max(shConsolidado.getLastColumn(), 26)).getValues();
       dataRange.forEach(r => {
-        const oc = r[colOC - 1];
-        if (oc) pedidosProcesados.add(String(oc).trim()); 
+        const oc = medipiel_limpiarOc_(r[colOC - 1]);
+        const sap = colSap ? medipiel_normalizeKey_(r[colSap - 1]) : medipiel_normalizeKey_(configCli.SOLICITANTE);
+        if (oc && sap) {
+          pedidosProcesados.add(`${oc}_${sap}`);
+        }
       });
     }
   }
 
-  // 4. Buscar archivos PDF en la carpeta de entrada de Drive
   const folder = DriveApp.getFolderById(configCli.FOLDER_ID);
   const fileIterator = obtenerArchivosCliente_(folder, configCli);
   const archivos = [];
@@ -79,45 +71,34 @@ function preAnalizarMEDIPIEL() {
   }
 
   if (!archivos.length) {
-    return { pedidosExtraidos: [], itemsExtraidos: [] };
+    return { pedidosExtraidos: [], itemsExtraidos: [], yaProcesados: [] };
   }
 
-  // 5. Iniciar motor de lectura de PDFs
   return medipiel_motorLectura(archivos, diccBodega, diccProductos, configCli, pedidosProcesados, diccDestinatarios);
 }
 
-/**
- * FUNCIÓN 2: GUARDAR DEFINITIVO (Invocada tras la confirmación en la UI)
- * Genera el consecutivo dinámico, inyecta los registros en CONSOLIDADO con la ciudad
- * real, compila el CSV para SAP, traslada los PDFs e informa a la KAM con valorización.
- * 
- * @param {Object} datosFormulario Payload enviado por la interfaz.
- * @return {Object} Respuesta con estado, datos en Base64 para el CSV y nombre del archivo.
- */
 function guardarDefinitivoMEDIPIEL(datosFormulario) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const configCli = CONFIG.CLIENTES["MEDIPIEL"];
 
-  // 1. Obtención de agente y correo electrónico de la KAM (fuente única: Asignacion_KAM)
+  // 1. Obtención 100% DESACOPLADA de la información del KAM desde main.gs
+  const infoKam = typeof obtenerInfoKamPorSolicitante_ === "function" 
+    ? obtenerInfoKamPorSolicitante_(configCli.SOLICITANTE) 
+    : null;
+
+  let codigoAgente = (infoKam && infoKam.iniciales) ? infoKam.iniciales : "SC";
+  let kamEncargado = (infoKam && infoKam.nombre) ? infoKam.nombre : "KAM ENCARGADO";
+  let correoKam = (infoKam && infoKam.correo) ? infoKam.correo : "";
+
+  // 2. Mapeo complementario de ciudades por subsidiario
   const shClientes = ss.getSheetByName("Listado clientes");
-
   let diccCiudades = {};
-  let codigoAgente = "XX";
-  let kamEncargado = "";
-  let correoKam = "";
 
-  const kamInfo = obtenerInfoKamPorSolicitante_(configCli.SOLICITANTE);
-  if (kamInfo) {
-    if (kamInfo.nombre) kamEncargado = kamInfo.nombre;
-    if (kamInfo.iniciales) codigoAgente = kamInfo.iniciales;
-    if (kamInfo.correo) correoKam = kamInfo.correo;
-  }
-
-  if (shClientes) {
+  if (shClientes && shClientes.getLastRow() >= 2) {
     const dataCli = shClientes.getDataRange().getValues();
     const headCli = dataCli[0].map(h => medipiel_normalizeKey_(h));
     const cSub = headCli.findIndex(h => h.includes("SUBSIDIARIO"));
-    const cPob = headCli.findIndex(h => h.includes("POBLACION"));
+    const cPob = headCli.findIndex(h => h.includes("POBLACION") || h.includes("CIUDAD"));
     if (cSub !== -1 && cPob !== -1) {
       for (let i = 1; i < dataCli.length; i++) {
         const subsidiario = String(dataCli[i][cSub]).trim();
@@ -126,7 +107,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
     }
   }
 
-  // 2. Preparar la hoja CONSOLIDADO
+  // 3. Preparar la hoja CONSOLIDADO
   let shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
   if (!shConsolidado) {
     shConsolidado = ss.insertSheet(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
@@ -138,7 +119,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
   const headerMapConsolidado = medipiel_getHeaderMap_(shConsolidado, 3);
   const numColsConsolidado = Math.max(shConsolidado.getLastColumn() || 13, CONSOLIDADO_HEADERS.length);
 
-  // 3. Generar consecutivo dinámico secuencial por agente (<CódigoAgente>-<Año><Consecutivo>)
+  // 4. Consecutivo dinámico secuencial por agente (<CódigoAgente>-<Año><Consecutivo>)
   const currentYearSuffix = String(new Date().getFullYear()).slice(-2);
   let maxConsecutivo = 0;
   
@@ -162,7 +143,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
     }
   }
 
-  // 4. Mapeo de datos para CSV y CONSOLIDADO
+  // 5. Mapeo de datos para CSV y CONSOLIDADO
   let filasCSV = [];
   let filasConsolidado = [];
   let contadorPedido = 1;
@@ -191,34 +172,38 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
 
     items.forEach(i => {
       let materialFinal = (datosFormulario.materialesSeleccionados && datosFormulario.materialesSeleccionados[i.Item_ID]) 
-                            ? datosFormulario.materialesSeleccionados[i.Item_ID] : "";
+                            ? String(datosFormulario.materialesSeleccionados[i.Item_ID]).trim() : "";
+      
+      // CORRECCIÓN: Permite códigos de hasta 12 dígitos oficiales (descarta vacíos, SIN_ o EANs de 13 dígitos que empiezan por 84)
+      const isNoActualizado = (datosFormulario.noActualizadosSeleccionados && datosFormulario.noActualizadosSeleccionados[i.Item_ID]) || 
+                              (!materialFinal || materialFinal.includes("SIN_") || materialFinal === i.Producto_Cod || (materialFinal.length === 13 && materialFinal.startsWith("84")));
 
-      if (materialFinal !== "" && !materialFinal.includes("SIN_")) {
-        pedidosValidos.add(p.Pedido_ID);
-        sumaUnidadesPedido += parseInt(i.Cant);
-        sumaValorPedido += (Number(i.Valor_Unitario) || 0) * (Number(i.Cant) || 0);
+      let matCsv = isNoActualizado ? "" : materialFinal;
 
-        filasCSV.push([
-          contadorPedido,
-          "",
-          configCli.SAP.CLASE_PEDIDO,
-          configCli.SAP.ORG_VENTAS,
-          configCli.SAP.CANAL,
-          configCli.SAP.SECTOR,
-          configCli.SOLICITANTE,
-          p.Destinatario_Merc,
-          p.Pedido_ID,
-          fechaEntregaSAP,
-          "", 
-          "",
-          posicionItem,
-          materialFinal,
-          "",
-          i.Cant
-        ]);
-        
-        posicionItem += 10;
-      }
+      pedidosValidos.add(p.Pedido_ID);
+      sumaUnidadesPedido += parseInt(i.Cant) || 0;
+      sumaValorPedido += (Number(i.Valor_Unitario) || 0) * (Number(i.Cant) || 0);
+
+      filasCSV.push([
+        contadorPedido,
+        "",
+        configCli.SAP.CLASE_PEDIDO,
+        configCli.SAP.ORG_VENTAS,
+        configCli.SAP.CANAL,
+        configCli.SAP.SECTOR,
+        configCli.SOLICITANTE,
+        p.Destinatario_Merc,
+        p.Pedido_ID,
+        fechaEntregaSAP,
+        "", 
+        "",
+        posicionItem,
+        matCsv, // Lleva el Material SAP (incluyendo códigos de 12 dígitos) o vacío si no cruzó
+        "",
+        i.Cant
+      ]);
+      
+      posicionItem += 10;
     });
 
     if (pedidosValidos.has(p.Pedido_ID)) {
@@ -226,7 +211,6 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
       const consecutivoStr = String(maxConsecutivo).padStart(4, '0');
       const idGenerado = `${codigoAgente}-${currentYearSuffix}${consecutivoStr}`;
       
-      // Tomar la ciudad proveniente de la Columna F de Destinatarios, con fallback a diccCiudades
       const ciudadDestino = p.Ciudad || diccCiudades[p.Destinatario_Merc] || "COTA";
 
       if (!primerConsecutivoGenerado) {
@@ -251,7 +235,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
         "Valor": sumaValorPedido, 
         "NO ENTREGA FACTURACIÓN": "",
         "Observaciones": "",
-        "KAM": "" // Dejado en blanco de forma explícita
+        "KAM": "" // Se deja en blanco para preservar la fórmula nativa de Google Sheets
       }, numColsConsolidado));
       
       contadorPedido++;
@@ -262,10 +246,10 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
      throw new Error("No hay productos válidos seleccionados. Proceso abortado.");
   }
 
-  // 5. Generar archivo CSV en memoria (sin fila de encabezado: el cargador SAP no la espera)
   let csvFileName = `Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`;
   let csvString = "";
-
+  
+  filasCSV.unshift(medipiel_getEstructuraCSVHeaders_());
   csvString = filasCSV.map(row => row.map(val => {
     let s = String(val);
     return (s.includes(';') || s.includes('"')) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -293,7 +277,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
     throw new Error("Fallo al guardar archivo CSV en Drive: " + errCSV.message); 
   }
 
-  // 8. Mover y renombrar archivos PDF procesados en Drive
+  // 8. Traslado y renombrado de PDFs procesados en Google Drive
   const folderDestinoId = configCli.PROCESSED_FOLDER_ID;
   const folderOrigenId = configCli.FOLDER_ID;
   const archivosAMover = new Set();
@@ -319,14 +303,14 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
     }
   });
 
-  // 9. ENVÍO DE CORREO AUTOMÁTICO VALORIZADO AL KAM
+  // 9. Enviar notificación por correo a la KAM encargada
   if (correoKam && correoKam.includes("@")) {
     try {
       let correoHTML = `
         <div style="font-family: 'Inter', sans-serif; color: #2B2830; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E5E7EB; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
           <div style="text-align: center; border-bottom: 2px solid #E41F33; padding-bottom: 15px; margin-bottom: 20px;">
             <h1 style="color: #2B2830; font-size: 24px; margin: 0; font-weight: 900; letter-spacing: 2px;">ISDIN</h1>
-            <p style="color: #E41F33; font-size: 11px; font-weight: 700; margin: 5px 0 0; text-transform: uppercase; letter-spacing: 1px;">Notificación Automática de Órdenes B2B</p>
+            <p style="color: #E41F33; font-size: 11px; font-weight: 700; margin: 5px 0 0; text-transform: uppercase; letter-spacing: 1px;">Notificación Automática de Órdenes B2B - MEDIPIEL</p>
           </div>
           
           <p style="font-size: 14px; line-height: 1.6; color: #4B5563;">Estimada <strong>${kamEncargado}</strong>,</p>
@@ -336,105 +320,130 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
           <div style="margin-top: 15px;">
       `;
       
-      const resumenOC = {};
-      datosFormulario.items.forEach(item => {
-         let oc = item.Pedido_ID;
-         if (!resumenOC[oc]) {
-           resumenOC[oc] = {
-             inyectados: 0,
-             itemsProcesados: [],
-             contieneBackOrder: false,
-             totalValorOk: 0,
-             totalValorBO: 0
-           };
-         }
-         
-         let mat = datosFormulario.materialesSeleccionados[item.Item_ID] || "";
-         let inyectado = (mat !== "" && !mat.includes("SIN_"));
-         let isBackOrder = datosFormulario.backordersSeleccionados[item.Item_ID] || false;
-         
-         if (inyectado) {
-             resumenOC[oc].inyectados++;
-             if (isBackOrder) resumenOC[oc].contieneBackOrder = true;
-             
-             const cant = parseInt(item.Cant) || 0;
-             const price = parseFloat(item.Valor_Unitario) || 0;
-             const sub = cant * price;
-             
-             if (isBackOrder) {
-               resumenOC[oc].totalValorBO += sub;
-             } else {
-               resumenOC[oc].totalValorOk += sub;
-             }
-             
-             let prodExistente = resumenOC[oc].itemsProcesados.find(p => p.cod === item.Producto_Cod);
-             if (prodExistente) {
-                 prodExistente.cant += cant;
-                 prodExistente.subtotal += sub;
-                 if (isBackOrder) prodExistente.isBackOrder = true; 
-             } else {
-                 resumenOC[oc].itemsProcesados.push({
-                     desc: item.Descripcion, 
-                     cant: cant, 
-                     cod: item.Producto_Cod,
-                     subtotal: sub,
-                     isBackOrder: isBackOrder
-                 });
-             }
-         }
+      datosFormulario.pedidos.forEach(p => {
+        const itemsPedido = datosFormulario.items.filter(i => i.Pedido_ID === p.Pedido_ID);
+        let itemsNoActualizados = [];
+        let itemsValidos = [];
+        let totalValorOk = 0;
+        let totalValorBO = 0;
+        let hasBackOrder = false;
+
+        itemsPedido.forEach(item => {
+          let mat = (datosFormulario.materialesSeleccionados && datosFormulario.materialesSeleccionados[item.Item_ID]) ? String(datosFormulario.materialesSeleccionados[item.Item_ID]).trim() : "";
+          
+          // CORRECCIÓN: Permite materiales de 12 dígitos sin enviarlos erróneamente a No Actualizados
+          let isNoActualizado = (datosFormulario.noActualizadosSeleccionados && datosFormulario.noActualizadosSeleccionados[item.Item_ID]) || 
+                                (!mat || mat.includes("SIN_") || mat === item.Producto_Cod || (mat.length === 13 && mat.startsWith("84")));
+          let isBO = !isNoActualizado && (datosFormulario.backordersSeleccionados && datosFormulario.backordersSeleccionados[item.Item_ID]);
+
+          const cant = parseInt(item.Cant) || 0;
+          const price = parseFloat(item.Valor_Unitario) || 0;
+          const sub = cant * price;
+
+          if (isNoActualizado) {
+            itemsNoActualizados.push({
+              desc: item.Descripcion || "Referencia no cruzada",
+              ean: item.Producto_Cod,
+              cant: cant
+            });
+          } else {
+            if (isBO) {
+              hasBackOrder = true;
+              totalValorBO += sub;
+            } else {
+              totalValorOk += sub;
+            }
+            itemsValidos.push({
+              desc: item.Descripcion,
+              ean: item.Producto_Cod,
+              cant: cant,
+              subtotal: sub,
+              isBO: isBO,
+              material: mat
+            });
+          }
+        });
+
+        let alertaNoActualizadosHtml = "";
+        if (itemsNoActualizados.length > 0) {
+          alertaNoActualizadosHtml = `
+            <div style="background-color: #FEF2F2; border: 1px solid #F87171; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
+              <div style="color: #991B1B; font-weight: bold; font-size: 12px; margin-bottom: 4px;">
+                ⚠️ Estos productos no se encuentran actualizados en la base de datos:
+              </div>
+              <p style="font-size: 11px; color: #7F1D1D; margin: 0 0 8px 0; line-height: 1.4;">
+                El cliente solicitó las siguientes referencias en la OC pero su código EAN no cruzó con el portafolio activo
+              </p>
+              <div style="border-top: 1px dashed #FCA5A5; padding-top: 6px;">
+          `;
+
+          itemsNoActualizados.forEach(it => {
+            alertaNoActualizadosHtml += `
+              <div style="padding: 4px 0; display: flex; justify-content: space-between; font-size: 11px; color: #7F1D1D;">
+                <div>
+                  <strong>${it.desc}</strong> <span style="font-family: monospace;">(EAN: ${it.ean})</span>
+                </div>
+                <div style="font-weight: bold;">${it.cant} ud.</div>
+              </div>
+            `;
+          });
+
+          alertaNoActualizadosHtml += `</div></div>`;
+        }
+
+        let listHtml = "";
+        itemsValidos.forEach(item => {
+          let badge = item.isBO
+            ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">⚠️ Back Order</span>'
+            : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">✅ OK</span>';
+
+          const formattedSub = "$" + Math.round(item.subtotal).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+          const subtotalText = item.subtotal > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
+
+          listHtml += `
+            <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
+              <div style="flex: 1; min-width: 0; padding-right: 10px;">
+                <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.desc}</span>
+                <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.ean} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
+              </div>
+              <div style="text-align: right; white-space: nowrap;">
+                ${badge}
+              </div>
+            </div>
+          `;
+        });
+
+        let statusLabel = '';
+        if (itemsNoActualizados.length > 0) {
+          statusLabel = '<span style="background-color: #FEE2E2; color: #B91C1C; border: 1px solid #FCA5A5; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">🚨 EANs No Actualizados</span>';
+        } else if (hasBackOrder) {
+          statusLabel = '<span style="background-color: #FEF3C7; color: #D97706; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">⚠️ Contiene Back Orders</span>';
+        } else {
+          statusLabel = '<span style="background-color: #D1FAE5; color: #059669; border: 1px solid #6EE7B7; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">✅ Completada con Éxito</span>';
+        }
+
+        let valueSummaryText = `Valor Estimado Facturar (OK): $${Math.round(totalValorOk).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+        if (totalValorBO > 0) {
+          valueSummaryText += ` | Valor en Back Order: $${Math.round(totalValorBO).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
+        }
+        if (itemsNoActualizados.length > 0) {
+          valueSummaryText += ` <br><span style="color:#B91C1C; font-size:11px; margin-top:4px; display:block;"><strong>Alerta Comercial:</strong> Hay ${itemsNoActualizados.length} ítem(s) que requieren actualización de catálogo.</span>`;
+        }
+
+        correoHTML += `
+          <div style="background-color: #FAFAFA; border: 1px solid #F3F4F6; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #E5E7EB; padding-bottom: 10px; margin-bottom: 10px;">
+              <span style="font-weight: bold; font-size: 14px; color: #111827;">Orden: ${p.Pedido_ID}</span>
+              ${statusLabel}
+            </div>
+            ${alertaNoActualizadosHtml}
+            ${listHtml}
+            <div style="text-align: right; font-size: 13px; font-weight: bold; margin-top: 15px; color: #111827;">
+              ${valueSummaryText}
+            </div>
+          </div>
+        `;
       });
-
-      for (let oc in resumenOC) {
-         if (resumenOC[oc].inyectados === 0) continue;
-
-         let statusOrden = resumenOC[oc].contieneBackOrder 
-            ? `<span style="background-color: #FEF3C7; color: #D97706; border: 1px solid #FCD34D; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">⚠️ Contiene Back Orders</span>`
-            : `<span style="background-color: #D1FAE5; color: #059669; border: 1px solid #6EE7B7; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: bold;">✅ Completada con Éxito</span>`;
-
-         let valueSummaryText = `Valor Estimado Facturar (OK): $${Math.round(resumenOC[oc].totalValorOk).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
-         if (resumenOC[oc].totalValorBO > 0) {
-           valueSummaryText += ` | Valor en Back Order: $${Math.round(resumenOC[oc].totalValorBO).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
-         }
-
-         correoHTML += `
-           <div style="background-color: #FAFAFA; border: 1px solid #F3F4F6; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
-             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #E5E7EB; padding-bottom: 10px; margin-bottom: 10px;">
-               <span style="font-weight: bold; font-size: 14px; color: #111827;">Orden: ${oc}</span>
-               ${statusOrden}
-             </div>
-             <div style="margin-top: 10px;">
-         `;
-         
-         resumenOC[oc].itemsProcesados.forEach(prod => {
-             let badge = prod.isBackOrder
-                ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">Back Order</span>'
-                : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">OK</span>';
-
-             const formattedSub = "$" + Math.round(prod.subtotal).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-             // INYECCIÓN DE SUBTOTAL FINANCIERO EN CADA PRODUCTO
-             const subtotalText = prod.subtotal > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
-
-             correoHTML += `
-               <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
-                 <div style="flex: 1; min-width: 0; padding-right: 10px;">
-                   <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${prod.desc}</span>
-                   <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${prod.cod} | ${prod.cant} ud.${subtotalText}</span>
-                 </div>
-                 <div style="text-align: right; white-space: nowrap;">
-                   ${badge}
-                 </div>
-               </div>
-             `;
-         });
-         
-         correoHTML += `
-             </div>
-             <div style="text-align: right; font-size: 13px; font-weight: bold; margin-top: 15px; color: #111827;">
-               ${valueSummaryText}
-             </div>
-           </div>
-         `;
-      }
 
       correoHTML += `
           </div>
@@ -456,7 +465,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
 
   return {
     mensaje: `¡Éxito! Se consolidaron los datos, se guardó el CSV y se notificó al KAM.`,
-    csvData: Utilities.base64Encode(csvString), 
+    csvData: Utilities.base64Encode(csvString).replace(/[\r\n]/g, ""), 
     fileName: csvFileName
   };
 }
@@ -465,6 +474,8 @@ function medipiel_motorLectura(archivos, diccBodega, diccProductos, configCli, p
   const pedidosExtraidos = [];
   const itemsExtraidos = [];
   const errores = [];
+  const yaProcesados = [];
+  const targetSap = medipiel_normalizeKey_(configCli.SOLICITANTE || "11026712");
 
   archivos.forEach((archivo) => {
     const fileId = archivo.id;
@@ -475,8 +486,17 @@ function medipiel_motorLectura(archivos, diccBodega, diccProductos, configCli, p
       const texto = medipiel_pdfToTextPreferNative_(blob, fileName);
       const pedido = medipiel_parsePedidoCabecera_(texto, fileId, fileName, configCli, diccDestinatarios);
       
+      const ocTrim = medipiel_limpiarOc_(pedido.Pedido_ID);
+      const comboKey = `${ocTrim}_${targetSap}`;
+
+      // ESCUDO ANTI-DUPLICADOS: Si la OC ya existe para MEDIPIEL, se omite
+      if (pedidosProcesados.has(comboKey)) {
+        if (!yaProcesados.includes(ocTrim)) yaProcesados.push(ocTrim);
+        return;
+      }
+
       const items = medipiel_parseItems_(texto, pedido.Pedido_ID, diccBodega, diccProductos);
-      if (!items.length) throw new Error('No se detectaron productos.');
+      if (!items.length) throw new Error('No se detectaron productos en la tabla del PDF.');
 
       pedidosExtraidos.push(pedido);
       items.forEach(it => itemsExtraidos.push(it));
@@ -488,7 +508,7 @@ function medipiel_motorLectura(archivos, diccBodega, diccProductos, configCli, p
     }
   });
 
-  return { pedidosExtraidos, itemsExtraidos, errores };
+  return { pedidosExtraidos, itemsExtraidos, errores, yaProcesados };
 }
 
 function medipiel_pdfToTextPreferNative_(blob, fileName) {
@@ -500,12 +520,28 @@ function medipiel_pdfToTextPreferNative_(blob, fileName) {
 
 function medipiel_parsePedidoCabecera_(texto, fileId, fileName, configCli, diccDestinatarios) {
   const t = texto;
-  const ordenCompra = medipiel_matchRegex_(t, /No\.\s*(\d{6,})/i);
-  const fechaPedido = medipiel_matchRegex_(t, /Fecha\s*Orden\s*:\s*([0-9]{1,2}[\/-][0-9]{1,2}[\/-][0-9]{2,4})/i);
-  const fechaEntrega = medipiel_matchRegex_(t, /Fecha\s*Entrega\s*:\s*([0-9]{1,2}[\/-][0-9]{1,2}[\/-][0-9]{2,4})/i);
-  const idDestinoRaw = medipiel_matchRegex_(t, /Bodega\s*:\s*([A-Z0-9_-]+)/i);
+  
+  let ordenCompra = medipiel_matchRegex_(t, /(?:No\.?|N°|Nro\.?|Orden(?:\s+de\s+Compra)?(?:\s+No\.?)?|Pedido(?:\s+No\.?)?)\s*[:.]?\s*(\d{4,12})/i);
+  
+  if (!ordenCompra && fileName) {
+    const matchFile = fileName.match(/\d{4,12}/);
+    if (matchFile) ordenCompra = matchFile[0];
+  }
 
-  if (!ordenCompra) throw new Error('OC no encontrada.');
+  if (!ordenCompra) {
+    ordenCompra = medipiel_matchRegex_(t, /No\s*(\d{4,12})/i);
+  }
+
+  const fechaPedido = medipiel_matchRegex_(t, /Fecha\s*(?:de\s*)?(?:Orden|Pedido)?\s*:\s*([0-9]{1,2}[\/-][0-9]{1,2}[\/-][0-9]{2,4})/i);
+  const fechaEntrega = medipiel_matchRegex_(t, /Fecha\s*(?:de\s*)?Entrega\s*:\s*([0-9]{1,2}[\/-][0-9]{1,2}[\/-][0-9]{2,4})/i);
+  
+  let idDestinoRaw = medipiel_matchRegex_(t, /Bodega\s*(?:de\s*Entrega)?\s*:\s*([A-Z0-9_-]+)/i);
+  if (!idDestinoRaw) {
+    idDestinoRaw = medipiel_matchRegex_(t, /Bodega\s*:\s*([^\n\r,]+)/i);
+    if (idDestinoRaw) idDestinoRaw = idDestinoRaw.trim();
+  }
+
+  if (!ordenCompra) throw new Error(`OC no encontrada en el PDF ni en el nombre del archivo.`);
   if (!idDestinoRaw) throw new Error(`FATAL_BODEGA:No se pudo leer la Bodega en la OC ${ordenCompra}.`);
 
   const destinoMap = diccDestinatarios[idDestinoRaw];
@@ -524,7 +560,7 @@ function medipiel_parsePedidoCabecera_(texto, fileId, fileName, configCli, diccD
     Archivo: fileName,
     Archivo_ID: fileId,
     Archivo_URL: `https://drive.google.com/file/d/${fileId}/view`,
-    Ciudad: destinoMap.ciudad || 'COTA' // Extraída nativamente de la Columna F
+    Ciudad: destinoMap.ciudad || 'COTA'
   };
 }
 
@@ -534,7 +570,9 @@ function medipiel_parseItems_(texto, pedidoId, diccBodega, diccProductos) {
   if (!bloqueTabla) return [];
 
   const items = [];
-  const re = /(\d{8,14})\s+(\d{3,})\s+([\s\S]+?)\s*(?:Und|UND|Un|UN|und|U\.M\.)\s+(\d+(?:[.,]\d+)?)\s+([$\d.,]+)/gmi;
+  
+  // Expresión regular ESTRICTA para EAN de 13 dígitos (\d{13}) tal como lo requieres
+  const re = /(\d{13})\s+(\d{3,})\s+([\s\S]+?)\s*(?:Und|UND|Un|UN|und|U\.M\.)\s+(\d+(?:[.,]\d+)?)\s+([$\d.,]+)/gmi;
   let match;
 
   while ((match = re.exec(bloqueTabla)) !== null) {
@@ -558,6 +596,21 @@ function medipiel_parseItems_(texto, pedidoId, diccBodega, diccProductos) {
     });
   }
   return items;
+}
+
+function medipiel_limpiarOc_(val) {
+  if (val === null || val === undefined) return "";
+  let s = String(val).trim().replace(/^'/, "");
+  if (/e/i.test(s)) {
+    let num = Number(s);
+    if (!isNaN(num)) s = num.toFixed(0);
+  }
+  if (s.includes(".")) s = s.split(".")[0];
+  return s.trim();
+}
+
+function medipiel_getEstructuraCSVHeaders_() { 
+  return [ "Contador", "N Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc", "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posicion pedido", "Material", "EAN", "Cantidad" ]; 
 }
 
 function medipiel_normalizeKey_(str) {
