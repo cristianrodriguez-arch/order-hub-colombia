@@ -144,29 +144,35 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
   }
 
   // 5. Mapeo de datos para CSV y CONSOLIDADO
-  let filasCSV = [];
+  const pedidosCsv = [];
   let filasConsolidado = [];
-  let contadorPedido = 1;
-  const pedidosValidos = new Set(); 
+  const pedidosValidos = new Set();
   let primerConsecutivoGenerado = null; 
   const mapaNombresArchivos = {}; 
 
   datosFormulario.pedidos.forEach(p => {
-    let posicionItem = 10;
     let sumaUnidadesPedido = 0;
     let sumaValorPedido = 0;
 
     let fechaUI = datosFormulario.fechasEntregas[p.Pedido_ID] ? datosFormulario.fechasEntregas[p.Pedido_ID].fecha : "";
-    let fechaEntregaSAP = "";
     let fechaEntregaNormalObj = "";
-    
+
     if (fechaUI) {
       let parts = fechaUI.split("-");
       if (parts.length === 3) {
-        fechaEntregaSAP = `${parts[2]}.${parts[1]}.${parts[0]}`;
         fechaEntregaNormalObj = new Date(parts[0], parts[1] - 1, parts[2]);
       }
     }
+
+    const pedidoCsv = {
+      sap: configCli.SAP,
+      solicitante: configCli.SOLICITANTE,
+      destinatario: p.Destinatario_Merc,
+      numPedidoCliente: p.Pedido_ID,
+      fechaEntrega: fechaUI,
+      lineas: []
+    };
+    pedidosCsv.push(pedidoCsv);
 
     const items = datosFormulario.items.filter(i => i.Pedido_ID === p.Pedido_ID);
 
@@ -184,26 +190,8 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
       sumaUnidadesPedido += parseInt(i.Cant) || 0;
       sumaValorPedido += (Number(i.Valor_Unitario) || 0) * (Number(i.Cant) || 0);
 
-      filasCSV.push([
-        contadorPedido,
-        "",
-        configCli.SAP.CLASE_PEDIDO,
-        configCli.SAP.ORG_VENTAS,
-        configCli.SAP.CANAL,
-        configCli.SAP.SECTOR,
-        configCli.SOLICITANTE,
-        p.Destinatario_Merc,
-        p.Pedido_ID,
-        fechaEntregaSAP,
-        "", 
-        "",
-        posicionItem,
-        matCsv, // Lleva el Material SAP (incluyendo códigos de 12 dígitos) o vacío si no cruzó
-        "",
-        i.Cant
-      ]);
-      
-      posicionItem += 10;
+      // Lleva el Material SAP (incluyendo códigos de 12 dígitos) o vacío si no cruzó
+      pedidoCsv.lineas.push({ material: matCsv, cantidad: i.Cant });
     });
 
     if (pedidosValidos.has(p.Pedido_ID)) {
@@ -237,23 +225,15 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
         "Observaciones": "",
         "KAM": "" // Se deja en blanco para preservar la fórmula nativa de Google Sheets
       }, numColsConsolidado));
-      
-      contadorPedido++;
     }
   });
 
-  if (filasCSV.length === 0) {
+  if (!pedidosCsv.some(pc => pc.lineas.length > 0)) {
      throw new Error("No hay productos válidos seleccionados. Proceso abortado.");
   }
 
   let csvFileName = `Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`;
-  let csvString = "";
-
-  // Sin fila de encabezado: el cargador SAP no la espera.
-  csvString = filasCSV.map(row => row.map(val => {
-    let s = String(val);
-    return (s.includes(';') || s.includes('"')) ? `"${s.replace(/"/g, '""')}"` : s;
-  }).join(';')).join('\r\n');
+  const csvString = construirCsvSap_(pedidosCsv);
 
   // 6. Escribir en la hoja CONSOLIDADO
   try {

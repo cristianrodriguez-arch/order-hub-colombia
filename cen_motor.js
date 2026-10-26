@@ -409,8 +409,7 @@ function guardarDefinitivoCEN(paquete) {
     const currentYearSuffix = String(new Date().getFullYear()).slice(-2);
 
     const filasConsolidado = [];
-    const filasCSV = [];
-    let contadorPedidoCSV = 1;
+    const pedidosCsv = [];
 
     const pedidosPorCliente = {};
     paquete.pedidos.forEach(p => {
@@ -433,7 +432,16 @@ function guardarDefinitivoCEN(paquete) {
         const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
         let totalUnidades = 0;
         let totalValor = 0;
-        let posicionItem = 10;
+
+        const pedidoCsv = {
+          sap: configCli.SAP,
+          solicitante: solicitanteSap,
+          destinatario: p.Id_Destino,
+          numPedidoCliente: p.Pedido_ID,
+          fechaEntrega: paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
+          lineas: []
+        };
+        pedidosCsv.push(pedidoCsv);
 
         itemsPedido.forEach(item => {
           let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
@@ -449,31 +457,7 @@ function guardarDefinitivoCEN(paquete) {
           totalUnidades += cant;
           totalValor += (cant * valUnit);
 
-          const fechaEntUI = paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "";
-          let fechaEntFormatted = "";
-          if (fechaEntUI) {
-            const parts = fechaEntUI.split("-");
-            if (parts.length === 3) fechaEntFormatted = `${parts[2]}/${parts[1]}/${parts[0]}`;
-          }
-
-          filasCSV.push([
-            contadorPedidoCSV,
-            "",
-            configCli.SAP.CLASE_PEDIDO,
-            configCli.SAP.ORG_VENTAS,
-            configCli.SAP.CANAL,
-            configCli.SAP.SECTOR,
-            solicitanteSap,
-            p.Id_Destino,
-            p.Pedido_ID,
-            fechaEntFormatted,
-            "", "",
-            posicionItem,
-            matCsv,
-            "",
-            cant
-          ]);
-          posicionItem += 10;
+          pedidoCsv.lineas.push({ material: matCsv, cantidad: cant });
         });
 
         if (totalUnidades > 0) {
@@ -496,7 +480,6 @@ function guardarDefinitivoCEN(paquete) {
             "", "",
             "" // DEJAR VACÍO: Para que actúe la fórmula nativa de Google Sheets
           ]);
-          contadorPedidoCSV++;
         }
       });
 
@@ -554,8 +537,7 @@ function guardarDefinitivoCEN(paquete) {
       }
     }
 
-    // Sin fila de encabezado: el cargador SAP no la espera.
-    const csvContent = filasCSV.map(r => r.join(";")).join("\n");
+    const csvContent = construirCsvSap_(pedidosCsv);
 
     const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
     const fileName = `Pedido_CEN_${fechaProceso}.csv`;

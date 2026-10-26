@@ -135,6 +135,43 @@ const CONFIG = {
   }
 };
 
+/**
+ * FORMATO ÚNICO DEL CSV DE CARGA A SAP (para todos los clientes).
+ * Para cambiar el formato se edita SOLO este objeto; construirCsvSap_() lo aplica.
+ *
+ * Cada columna define:
+ *   - nombre: rótulo de referencia (el CSV NO lleva fila de encabezado: el cargador SAP no la espera).
+ *   - valor(ctx): de dónde sale el dato. ctx = { contador, pedido, linea, posicion }.
+ *   - soloPrimeraLinea: true si el dato va solo en la primera línea de cada pedido
+ *     y en blanco en las siguientes.
+ *
+ * Estructura validada con "Ejemplo estructura CSV para SAP.xlsx" (pedido SC-260412).
+ */
+const CSV_SAP = {
+  SEPARADOR: ";",
+  FIN_LINEA: "\r\n",
+  FORMATO_FECHA: "dd.MM.yyyy",
+  PASO_POSICION: 10,
+  COLUMNAS: [
+    { nombre: "Contador",                 valor: c => c.contador,                  soloPrimeraLinea: true },  // A
+    { nombre: "Nº Pedido SAP",            valor: c => "" },                                                   // B
+    { nombre: "Clase pedido",             valor: c => c.pedido.sap.CLASE_PEDIDO,   soloPrimeraLinea: true },  // C
+    { nombre: "Org ventas",               valor: c => c.pedido.sap.ORG_VENTAS,     soloPrimeraLinea: true },  // D
+    { nombre: "Canal",                    valor: c => c.pedido.sap.CANAL,          soloPrimeraLinea: true },  // E
+    { nombre: "Sector",                   valor: c => c.pedido.sap.SECTOR,         soloPrimeraLinea: true },  // F
+    { nombre: "Solicitante",              valor: c => c.pedido.solicitante },                                 // G
+    { nombre: "Destinatario Merc",        valor: c => c.pedido.destinatario },                                // H
+    { nombre: "Num pedido cliente",       valor: c => c.pedido.numPedidoCliente },                            // I
+    { nombre: "Fecha preferente Entrega", valor: c => formatearFechaSap_(c.pedido.fechaEntrega) },            // J
+    { nombre: "Descuento ZTK1 (%)",       valor: c => "" },                                                   // K
+    { nombre: "Motivo pedido",            valor: c => "" },                                                   // L
+    { nombre: "Posición pedido",          valor: c => c.posicion },                                           // M
+    { nombre: "Material",                 valor: c => c.linea.material },                                     // N
+    { nombre: "EAN",                      valor: c => "" },                                                   // O
+    { nombre: "Cantidad",                 valor: c => c.linea.cantidad }                                      // P
+  ]
+};
+
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
@@ -333,4 +370,63 @@ function obtenerMapaBodegaGeneral_(sheet) {
     }
   }
   return map;
+}
+
+/**
+ * Genera el contenido del CSV de carga a SAP aplicando el formato único CSV_SAP.
+ * Lo usan los tres motores (MEDIPIEL, CMX, CEN): ninguno arma filas del CSV por su cuenta.
+ *
+ * @param {Array<Object>} pedidos Lista en el orden en que deben salir en el CSV:
+ *   {
+ *     sap: { CLASE_PEDIDO, ORG_VENTAS, CANAL, SECTOR },  // configCli.SAP
+ *     solicitante: String,       // SAP ID del cliente
+ *     destinatario: String,      // Id destino de la mercancía
+ *     numPedidoCliente: String,  // OC del cliente
+ *     fechaEntrega: String,      // "yyyy-MM-dd" (valor del <input type="date"> del wizard)
+ *     lineas: [{ material: String, cantidad: Number }]
+ *   }
+ *   Los pedidos sin líneas se omiten y no consumen contador.
+ * @return {String} Contenido del CSV, sin fila de encabezado.
+ */
+function construirCsvSap_(pedidos) {
+  const filas = [];
+  let contador = 0;
+
+  pedidos.forEach(pedido => {
+    if (!pedido.lineas || pedido.lineas.length === 0) return;
+    contador++;
+
+    pedido.lineas.forEach((linea, idx) => {
+      const ctx = {
+        contador: contador,
+        pedido: pedido,
+        linea: linea,
+        posicion: (idx + 1) * CSV_SAP.PASO_POSICION
+      };
+      filas.push(CSV_SAP.COLUMNAS.map(col => (col.soloPrimeraLinea && idx > 0) ? "" : col.valor(ctx)));
+    });
+  });
+
+  return filas.map(fila => fila.map(csvEscaparCampo_).join(CSV_SAP.SEPARADOR)).join(CSV_SAP.FIN_LINEA);
+}
+
+/**
+ * Convierte la fecha del wizard ("yyyy-MM-dd") al formato CSV_SAP.FORMATO_FECHA.
+ * Si llega vacía o en otro formato, se devuelve tal cual.
+ */
+function formatearFechaSap_(fechaIso) {
+  const partes = String(fechaIso || "").trim().split("-");
+  if (partes.length !== 3) return String(fechaIso || "").trim();
+  return CSV_SAP.FORMATO_FECHA
+    .replace("yyyy", partes[0])
+    .replace("MM", partes[1])
+    .replace("dd", partes[2]);
+}
+
+/**
+ * Encierra en comillas los campos que contienen el separador o comillas.
+ */
+function csvEscaparCampo_(val) {
+  const s = (val === null || val === undefined) ? "" : String(val);
+  return (s.includes(CSV_SAP.SEPARADOR) || s.includes('"')) ? `"${s.replace(/"/g, '""')}"` : s;
 }

@@ -872,7 +872,7 @@ function guardarDefinitivoCMX(paquete) {
       }
     });
 
-    const csvData = cmx_generarCsvSap_(paquete, nuevoIdStr);
+    const csvData = cmx_generarCsvSap_(paquete);
     const fileName = `Pedido_${nuevoIdStr}.csv`;
 
     try {
@@ -915,74 +915,36 @@ function guardarDefinitivoCMX(paquete) {
 }
 
 /**
- * Genera el archivo plano oficial de 16 columnas para SAP.
+ * Arma los pedidos CMX y delega el formato del CSV en construirCsvSap_ (main.gs).
  * Acepta códigos SAP oficiales de hasta 12 dígitos (ej: 690032151480).
  */
-function cmx_generarCsvSap_(paquete, nuevoIdStr) {
+function cmx_generarCsvSap_(paquete) {
   const configCli = CONFIG.CLIENTES["CMX"];
-  const sap = configCli.SAP || { CLASE_PEDIDO: "ZDIR", ORG_VENTAS: "Z011", CANAL: "10", SECTOR: "00" };
-  
-  // Sin fila de encabezado: el cargador SAP no la espera.
-  const rows = [];
-  let orderIndex = 0;
 
-  paquete.pedidos.forEach((pedido) => {
-    orderIndex++;
+  const pedidosCsv = paquete.pedidos.map((pedido) => {
     const itemsPedido = paquete.items.filter(i => i.Pedido_ID === pedido.Pedido_ID);
-    let posicionContador = 10;
-    let esPrimeraPosicion = true;
 
-    itemsPedido.forEach((item) => {
+    const lineas = itemsPedido.map((item) => {
       let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
-      
+
       // CORRECCIÓN: Permite materiales de 12 dígitos, descarta EANs (13 dígitos que empiezan por 84) o vacíos
-      const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
+      const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) ||
                               (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
 
-      const matCsv = isNoActualizado ? "" : matSeleccionado;
-
-      const fechaEnt = paquete.fechasEntregas[item.Pedido_ID] ? paquete.fechasEntregas[item.Pedido_ID].fecha : "";
-      let fechaEntFormatted = "";
-      if (fechaEnt) {
-        const dateParts = fechaEnt.split("-");
-        if (dateParts.length === 3) {
-          fechaEntFormatted = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
-        } else {
-          fechaEntFormatted = fechaEnt;
-        }
-      }
-
-      const rowData = new Array(16).fill("");
-
-      rowData[0] = orderIndex; // Col 1: Contador
-      rowData[1] = "";         // Col 2: Nº Pedido SAP
-
-      // Datos de cabecera solo en la primera posición del pedido
-      if (esPrimeraPosicion) {
-        rowData[2] = sap.CLASE_PEDIDO;      // Col 3: Clase pedido
-        rowData[3] = sap.ORG_VENTAS;        // Col 4: Org ventas
-        rowData[4] = sap.CANAL;             // Col 5: Canal
-        rowData[5] = sap.SECTOR;            // Col 6: Sector
-        rowData[6] = configCli.SOLICITANTE; // Col 7: Solicitante
-        rowData[7] = pedido.Id_Destino || "11033482"; // Col 8: Destinatario Merc
-        rowData[8] = nuevoIdStr;            // Col 9: Num pedido cliente
-        rowData[9] = fechaEntFormatted;     // Col 10: Fecha preferente Entrega
-        esPrimeraPosicion = false;
-      }
-
-      rowData[10] = "";                // Col 11: Descuento ZTK1 (%)
-      rowData[11] = "";                // Col 12: Motivo pedido
-      rowData[12] = posicionContador;  // Col 13: Posición pedido (10, 20, 30...)
-      rowData[13] = matCsv;            // Col 14: Material SAP (ahora incluye códigos de 12 dígitos)
-      rowData[14] = "";                // Col 15: EAN
-      rowData[15] = item.Cant;         // Col 16: Cantidad
-
-      rows.push(rowData);
-      posicionContador += 10;
+      return { material: isNoActualizado ? "" : matSeleccionado, cantidad: item.Cant };
     });
+
+    return {
+      sap: configCli.SAP,
+      solicitante: configCli.SOLICITANTE,
+      destinatario: pedido.Id_Destino || "11033482",
+      numPedidoCliente: pedido.Pedido_ID,
+      fechaEntrega: paquete.fechasEntregas[pedido.Pedido_ID] ? paquete.fechasEntregas[pedido.Pedido_ID].fecha : "",
+      lineas: lineas
+    };
   });
 
-  return rows.map(r => r.join(";")).join("\n");
+  return construirCsvSap_(pedidosCsv);
 }
 
 function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
