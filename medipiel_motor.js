@@ -235,26 +235,29 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
   let csvFileName = `Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`;
   const csvString = construirCsvSap_(pedidosCsv);
 
-  // 6. Escribir en la hoja CONSOLIDADO
-  try {
-    if (filasConsolidado.length > 0) {
-      shConsolidado.getRange(shConsolidado.getLastRow() + 1, 1, filasConsolidado.length, numColsConsolidado).setValues(filasConsolidado);
-      SpreadsheetApp.flush(); 
-    }
-  } catch (errSheets) {
-    throw new Error("Fallo al escribir en la Base de Datos (Consolidado): " + errSheets.message);
-  }
-
-  // 7. Guardar el archivo CSV en Google Drive
+  // 6. Guardar el archivo CSV en Google Drive ANTES de CONSOLIDADO: si falla, la OC no queda
+  //    marcada como procesada y se puede reintentar.
+  let archivoCsv = null;
   try {
     if (CONFIG.FOLDER_CSV_ID) {
       const folderCSV = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID);
-      folderCSV.createFile(csvFileName, csvString, MimeType.CSV);
+      archivoCsv = folderCSV.createFile(csvFileName, csvString, MimeType.CSV);
     } else {
       throw new Error("Falta configurar FOLDER_CSV_ID en CONFIG.");
     }
-  } catch (errCSV) { 
-    throw new Error("Fallo al guardar archivo CSV en Drive: " + errCSV.message); 
+  } catch (errCSV) {
+    throw new Error("Fallo al guardar archivo CSV en Drive (no se registró nada en CONSOLIDADO): " + errCSV.message);
+  }
+
+  // 7. Escribir en la hoja CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.
+  try {
+    if (filasConsolidado.length > 0) {
+      shConsolidado.getRange(shConsolidado.getLastRow() + 1, 1, filasConsolidado.length, numColsConsolidado).setValues(filasConsolidado);
+      SpreadsheetApp.flush();
+    }
+  } catch (errSheets) {
+    try { archivoCsv.setTrashed(true); } catch (ignore) {}
+    throw new Error("Fallo al escribir en la Base de Datos (Consolidado); el CSV se envió a la papelera: " + errSheets.message);
   }
 
   // 8. Traslado y renombrado de PDFs procesados en Google Drive
@@ -559,8 +562,9 @@ function medipiel_parseItems_(texto, pedidoId, diccBodega, diccProductos) {
     const eanRaw = String(match[1]).trim();
     let mats = eanRaw ? (diccBodega[eanRaw] || []) : [];
     
+    // Existe en Productos pero no en Bodega: stock 0 para que salga como Back Order, nunca como OK
     if (mats.length === 0 && eanRaw && diccProductos[eanRaw]) {
-        mats = [{ material: diccProductos[eanRaw], stock: 999999 }];
+        mats = [{ material: diccProductos[eanRaw], stock: 0, fechaDisplay: "Sin stock" }];
     }
     
     items.push({
@@ -649,17 +653,4 @@ function medipiel_parseDateEs_(d) {
     return new Date(y, p[1] - 1, p[0]);
   }
   return d;
-}
-
-function medipiel_guardarNuevoDestinatario(datos) {
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  let sh = ss.getSheetByName(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
-  
-  if (!sh) {
-    sh = ss.insertSheet(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
-    sh.appendRow(["Id_origen", "Nombre_origen", "Id_destino", "Nombre_destino", "Cruce_cliente", "Ciudad"]);
-  }
-  
-  sh.appendRow([datos.idOrigen, datos.nombreOrigen, datos.idDestino, datos.nombreDestino, datos.cruceCliente, datos.ciudad || "COTA"]);
-  return true;
 }

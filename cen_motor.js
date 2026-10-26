@@ -100,12 +100,17 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
   const errores = [];
   const yaProcesados = [];
   const mapaClientesCount = {};
+  // Por archivo: OCs nuevas que contiene y si tiene algo que impide darlo por terminado.
+  // guardarDefinitivoCEN solo mueve el Excel a Procesados si todas sus OCs quedaron registradas.
+  const estadoArchivos = {};
 
   const shProd = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
   const { catalogoPorTarifa, catalogoGlobal } = cen_getCatalogoProductosGlobal_(shProd);
 
   archivos.forEach((file) => {
     let tempFileId = null;
+    const estado = { ocsPendientes: [], bloqueado: false };
+    estadoArchivos[file.getId()] = estado;
     try {
       tempFileId = cen_convertirExcelASheet_(file);
       const tempSs = SpreadsheetApp.openById(tempFileId);
@@ -147,6 +152,14 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
         const nombreComprador = colCompradorNombre !== -1 ? String(row[colCompradorNombre]).trim() : "CLIENTE_CEN";
         
         const clienteInternoObj = cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli);
+        if (!clienteInternoObj) {
+          // No se inventa un Solicitante SAP: la OC se bloquea hasta registrar el comprador en
+          // CONFIG.CLIENTES.CEN.MAPEO_CLIENTES, y el Excel se queda en la carpeta de entrada.
+          estado.bloqueado = true;
+          const msgError = `Cliente no homologado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Agréguelo a MAPEO_CLIENTES en main.gs.`;
+          if (!errores.includes(msgError)) errores.push(msgError);
+          continue;
+        }
         const clienteKey = clienteInternoObj.key;
         const solicitanteSap = clienteInternoObj.solicitante;
 
@@ -172,8 +185,11 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
           let fechaPedidoStr = colFechaDoc !== -1 && row[colFechaDoc] ? cen_formatFechaStr_(row[colFechaDoc]) : Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
           let fechaEntregaStr = colFechaEnt !== -1 && row[colFechaEnt] ? cen_formatFechaStr_(row[colFechaEnt]) : "";
 
+          if (!estado.ocsPendientes.includes(comboKey)) estado.ocsPendientes.push(comboKey);
+
           pedidoObj = {
             Pedido_ID: ocRaw,
+            Combo_Key: comboKey,
             Cliente_Key: clienteKey,
             Cliente_Nombre: clienteInternoObj.nombreDisplay,
             Solicitante_SAP: clienteInternoObj.solicitante,
@@ -255,6 +271,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
       }
 
     } catch (e) {
+      estado.bloqueado = true;
       errores.push(`${file.getName()}: ${e.message}`);
     } finally {
       if (tempFileId) {
@@ -270,7 +287,8 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
     pedidosExtraidos: pedidosExtraidos,
     itemsExtraidos: itemsExtraidos,
     errores: errores,
-    yaProcesados: yaProcesados
+    yaProcesados: yaProcesados,
+    estadoArchivos: estadoArchivos
   };
 }
 
@@ -286,12 +304,17 @@ function cen_limpiarOc_(val) {
   return s.trim();
 }
 
+/**
+ * Homologa el comprador CEN contra CONFIG.CLIENTES.CEN.MAPEO_CLIENTES.
+ *
+ * @return {Object|null} { key, nombreDisplay, solicitante, listaPrecios }, o null si el comprador
+ *   no está en MAPEO_CLIENTES. Nunca se inventa un solicitante ni una lista de precios.
+ */
 function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli) {
   const mapeo = configCli.MAPEO_CLIENTES || {};
   const normComprador = cen_normalizeKey_(nombreComprador);
   const normEan = cen_normalizeKey_(eanComprador);
 
-  // 1. Búsqueda en MAPEO_CLIENTES
   for (const key in mapeo) {
     const cli = mapeo[key];
     const matchEan = cli.eans && cli.eans.includes(normEan);
@@ -307,43 +330,7 @@ function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli
     }
   }
 
-  // 2. Búsqueda dinámica en Asignacion_KAM
-  try {
-    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const shAsig = ss.getSheetByName("Asignacion_KAM");
-    if (shAsig && shAsig.getLastRow() >= 2) {
-      const dataAsig = shAsig.getDataRange().getValues();
-      const headAsig = dataAsig[0].map(h => cen_normalizeKey_(h));
-      const colSap = headAsig.findIndex(h => h.includes("SAP") || h.includes("ID"));
-      const colNom = headAsig.findIndex(h => h.includes("CLIENTE") || h.includes("NOMBRE") || h.includes("SOLICITANTE"));
-
-      if (colSap !== -1 && colNom !== -1) {
-        for (let i = 1; i < dataAsig.length; i++) {
-          const nomClienteFila = cen_normalizeKey_(dataAsig[i][colNom]);
-          if (nomClienteFila && (normComprador.includes(nomClienteFila) || nomClienteFila.includes(normComprador))) {
-            const sapId = String(dataAsig[i][colSap]).trim();
-            return {
-              key: cen_normalizeKey_(dataAsig[i][colNom]),
-              nombreDisplay: String(dataAsig[i][colNom]).trim(),
-              solicitante: sapId,
-              listaPrecios: String(dataAsig[i][colNom]).trim()
-            };
-          }
-        }
-      }
-    }
-  } catch (eScan) {
-    console.warn("Búsqueda en Asignacion_KAM falló: " + eScan.message);
-  }
-
-  // 3. Fallback de contingencia
-  const cleanKey = normComprador.substring(0, 15) || "CLIENTE_CEN";
-  return {
-    key: cleanKey,
-    nombreDisplay: nombreComprador || "CLIENTE CEN",
-    solicitante: configCli.SOLICITANTE || "11000000",
-    listaPrecios: nombreComprador || "Distribuidor"
-  };
+  return null;
 }
 
 /**
@@ -395,8 +382,9 @@ function cen_getCatalogoProductosGlobal_(shProd) {
 }
 
 /**
- * Guarda las órdenes en el CONSOLIDADO, genera el CSV SAP unificado por fecha,
- * traslada archivos procesados y notifica a cada KAM.
+ * Genera el CSV SAP unificado, lo guarda en Drive, registra las órdenes en CONSOLIDADO,
+ * traslada los Excel terminados y notifica a cada KAM, en ese orden: si falla el CSV no se
+ * registra nada, y los correos solo salen cuando todo quedó guardado.
  */
 function guardarDefinitivoCEN(paquete) {
   try {
@@ -410,6 +398,8 @@ function guardarDefinitivoCEN(paquete) {
 
     const filasConsolidado = [];
     const pedidosCsv = [];
+    const combosRegistrados = new Set();
+    const notificaciones = [];
 
     const pedidosPorCliente = {};
     paquete.pedidos.forEach(p => {
@@ -429,7 +419,8 @@ function guardarDefinitivoCEN(paquete) {
       let maxConsecutive = cen_obtenerMaxConsecutivo_(shConsolidado, prefix);
 
       pedidosCli.forEach(p => {
-        const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
+        // Por OC y cliente: dos clientes pueden traer el mismo número de OC en el mismo lote
+        const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key);
         let totalUnidades = 0;
         let totalValor = 0;
 
@@ -464,6 +455,7 @@ function guardarDefinitivoCEN(paquete) {
           maxConsecutive++;
           const consecutivoStr = String(maxConsecutive).padStart(4, "0");
           const idGenerado = prefix + consecutivoStr;
+          combosRegistrados.add(p.Combo_Key);
 
           filasConsolidado.push([
             idGenerado,
@@ -483,33 +475,51 @@ function guardarDefinitivoCEN(paquete) {
         }
       });
 
-      // Disparo de correo al KAM con validación estricta y logs de trazabilidad
-      if (paquete.notificarKAM !== false) {
-        if (kamInfo.email && kamInfo.email.includes("@")) {
-          try {
-            cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, primerPedido.Cliente_Nombre);
-            console.log(`Correo enviado con éxito a ${kamInfo.name} (${kamInfo.email}) para cliente ${primerPedido.Cliente_Nombre}`);
-          } catch (eMailErr) {
-            console.error(`Error enviando correo a ${kamInfo.email}: ${eMailErr.message}`);
-          }
-        } else {
-          console.warn(`No se envió notificación de ${primerPedido.Cliente_Nombre} porque no se encontró un correo registrado para el Solicitante SAP ${solicitanteSap} en Asignacion_KAM.`);
-        }
-      }
+      // El correo se envía al final, cuando el CSV y CONSOLIDADO ya quedaron guardados
+      notificaciones.push({ pedidosCli: pedidosCli, kamInfo: kamInfo, clienteNombre: primerPedido.Cliente_Nombre, solicitanteSap: solicitanteSap });
     }
 
-    if (filasConsolidado.length > 0) {
+    if (filasConsolidado.length === 0) {
+      throw new Error("No hay órdenes con unidades para registrar.");
+    }
+
+    // 1. CSV primero: si no se puede guardar, no se registra nada en CONSOLIDADO.
+    const csvContent = construirCsvSap_(pedidosCsv);
+
+    const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
+    const fileName = `Pedido_CEN_${fechaProceso}.csv`;
+    let archivoCsv = null;
+
+    try {
+      const folderCSV = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID);
+      archivoCsv = folderCSV.createFile(fileName, csvContent, MimeType.PLAIN_TEXT);
+    } catch (eCsv) {
+      throw new Error("No se pudo guardar el CSV en Drive (no se registró nada en CONSOLIDADO): " + eCsv.message);
+    }
+
+    // 2. CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.
+    try {
       const lastRow = shConsolidado.getLastRow();
       shConsolidado.getRange(lastRow + 1, 1, filasConsolidado.length, filasConsolidado[0].length).setValues(filasConsolidado);
+      SpreadsheetApp.flush();
+    } catch (errSheets) {
+      try { archivoCsv.setTrashed(true); } catch (ignore) {}
+      throw new Error("Fallo al escribir en CONSOLIDADO; el CSV se envió a la papelera: " + errSheets.message);
     }
 
+    // 3. Traslado de los Excel. Un Excel CEN trae OCs de varios clientes: solo se mueve si TODAS
+    //    sus OCs nuevas quedaron registradas y no tiene compradores sin homologar. Si no, se queda
+    //    en la carpeta de entrada y el próximo análisis mostrará solo lo que falta.
+    const archivosRetenidos = [];
     if (configCli.PROCESSED_FOLDER_ID) {
       const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
+      const estadoArchivos = paquete.estadoArchivos || {};
       const archivosProcesadosMap = {};
 
       paquete.pedidos.forEach(p => {
-        if (p.Archivo_Id) {
+        if (p.Archivo_Id && !archivosProcesadosMap[p.Archivo_Id]) {
           archivosProcesadosMap[p.Archivo_Id] = {
+            nombreOriginal: p.Archivo_Nombre || p.Archivo_Id,
             clienteNombre: p.Cliente_Nombre || "CLIENTE_CEN",
             fechaPedido: p.Fecha_Pedido || Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")
           };
@@ -517,6 +527,13 @@ function guardarDefinitivoCEN(paquete) {
       });
 
       for (const fileId in archivosProcesadosMap) {
+        const estado = estadoArchivos[fileId];
+        const completo = estado && !estado.bloqueado && estado.ocsPendientes.every(k => combosRegistrados.has(k));
+        if (!completo) {
+          archivosRetenidos.push(archivosProcesadosMap[fileId].nombreOriginal);
+          continue;
+        }
+
         try {
           const file = DriveApp.getFileById(fileId);
           file.moveTo(folderDestino);
@@ -537,23 +554,34 @@ function guardarDefinitivoCEN(paquete) {
       }
     }
 
-    const csvContent = construirCsvSap_(pedidosCsv);
-
-    const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
-    const fileName = `Pedido_CEN_${fechaProceso}.csv`;
-
-    try {
-      const folderCSV = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID);
-      folderCSV.createFile(fileName, csvContent, MimeType.PLAIN_TEXT);
-    } catch (eCsv) {
-      console.error("Error guardando CSV en Drive: " + eCsv.message);
+    // 4. Correos a las KAM, solo por las órdenes que quedaron registradas
+    if (paquete.notificarKAM !== false) {
+      notificaciones.forEach(n => {
+        const pedidosRegistradosCli = n.pedidosCli.filter(p => combosRegistrados.has(p.Combo_Key));
+        if (pedidosRegistradosCli.length === 0) return;
+        if (n.kamInfo.email && n.kamInfo.email.includes("@")) {
+          try {
+            cen_enviarCorreoKam_(pedidosRegistradosCli, paquete, n.kamInfo, n.clienteNombre);
+            console.log(`Correo enviado con éxito a ${n.kamInfo.name} (${n.kamInfo.email}) para cliente ${n.clienteNombre}`);
+          } catch (eMailErr) {
+            console.error(`Error enviando correo a ${n.kamInfo.email}: ${eMailErr.message}`);
+          }
+        } else {
+          console.warn(`No se envió notificación de ${n.clienteNombre} porque no se encontró un correo registrado para el Solicitante SAP ${n.solicitanteSap} en Asignacion_KAM.`);
+        }
+      });
     }
 
     const base64Limpio = Utilities.base64Encode(csvContent, Utilities.Charset.UTF_8).replace(/[\r\n]/g, "");
 
+    let mensaje = `Se han procesado exitosamente ${filasConsolidado.length} órdenes de compra de CEN.`;
+    if (archivosRetenidos.length > 0) {
+      mensaje += ` ${archivosRetenidos.length} archivo(s) se dejaron en la carpeta de entrada porque aún tienen órdenes sin registrar: ${archivosRetenidos.join(", ")}.`;
+    }
+
     return {
       success: true,
-      mensaje: `Se han procesado exitosamente ${filasConsolidado.length} órdenes de compra de CEN.`,
+      mensaje: mensaje,
       csvData: base64Limpio,
       fileName: fileName
     };

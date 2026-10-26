@@ -161,7 +161,7 @@
       colorAccent: '#00BCD4',
       fnPreAnalizar: 'preAnalizarMEDIPIEL',
       fnGuardar: 'guardarDefinitivoMEDIPIEL',
-      fnGuardarDestinatario: 'medipiel_guardarNuevoDestinatario'
+      fnGuardarDestinatario: 'guardarNuevoDestinatario'
     },
     CMX: {
       titulo: 'Pedidos CMX',
@@ -179,7 +179,7 @@
       colorAccent: '#9A64CD',
       fnPreAnalizar: 'preAnalizarCMX',
       fnGuardar: 'guardarDefinitivoCMX',
-      fnGuardarDestinatario: 'cmx_guardarNuevoDestinatario'
+      fnGuardarDestinatario: 'guardarNuevoDestinatario'
     },
     CEN: {
       titulo: 'Pedidos CEN (Portal Carvajal)',
@@ -211,7 +211,9 @@
     materialesPreseleccionados: {},
     productosAgrupados: [],
     paquetesProcesados: [],
-    clientesCenConfigurados: {}
+    clientesCenConfigurados: {},
+    catalogoMateriales: null,
+    catalogoError: null
   };
 
   function wizardInit(cliente) {
@@ -233,7 +235,9 @@
       materialesPreseleccionados: {},
       productosAgrupados: [],
       paquetesProcesados: [],
-      clientesCenConfigurados: {}
+      clientesCenConfigurados: {},
+      catalogoMateriales: null,
+      catalogoError: null
     };
 
     wizardResetFlujo();
@@ -278,6 +282,13 @@
     document.getElementById('wizard-loading').classList.remove('hidden');
     document.getElementById('wizard-loading-text').innerText = cfg.textoCargando;
 
+    // Catálogo de materiales válidos (Productos + Bodega) para validar lo que se digite a mano.
+    // Se pide en paralelo al pre-análisis, que tarda más.
+    google.script.run
+      .withSuccessHandler((catalogo) => { wizardState.catalogoMateriales = catalogo || {}; })
+      .withFailureHandler((err) => { wizardState.catalogoError = err.message; })
+      .obtenerCatalogoMaterialesSap();
+
     google.script.run
       .withSuccessHandler(wizardProcesarRespuesta)
       .withFailureHandler((err) => {
@@ -315,6 +326,22 @@
       Swal.fire({ icon: 'info', title: cfg.tituloSinResultados, html: msg, confirmButtonColor: '#2B2830' });
       volverDashboard();
       return;
+    }
+
+    // Hay órdenes para tramitar, pero otras no se pudieron leer (ej. cliente CEN no homologado):
+    // se avisa para que no pasen desapercibidas.
+    if (respuesta.errores && respuesta.errores.length > 0) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'Órdenes que no se pueden procesar',
+        html: `
+          <p class="text-xs text-gray-600 mb-3">Puede continuar con las demás. Estas quedarán pendientes hasta corregir la causa:</p>
+          <div class="text-left text-xs bg-amber-50 p-3 rounded-lg border border-amber-200 text-amber-800 max-h-60 overflow-y-auto font-mono space-y-1">
+            ${respuesta.errores.map(e => `<div>• ${e}</div>`).join('')}
+          </div>
+        `,
+        confirmButtonColor: '#2B2830'
+      });
     }
 
     if (wizardState.cliente === 'CEN' && respuesta.clientesDetectados && respuesta.clientesDetectados.length > 0) {
@@ -437,11 +464,21 @@
   function wizardContinuarEan() {
     try {
       const inputs = document.querySelectorAll('[id^="wizard_ean_"]');
+
+      // Ningún material manual pasa sin existir en el catálogo (Productos o Bodega)
+      const erroresMat = wizardValidarInputsMaterial(inputs);
+      if (erroresMat.length > 0) {
+        mostrarError(erroresMat.join('<br>'));
+        return;
+      }
+
       inputs.forEach(input => {
         const cod = String(input.id.replace("wizard_ean_", "")).trim();
         const val = input.value.trim();
         if (val) {
-          const matForzado = [{ material: val, stock: 999999, isExpired: false, isManual: true }];
+          // Stock real de Bodega (antes 999999, que hacía pasar cualquier material como OK)
+          const stockReal = Number(wizardState.catalogoMateriales[val].stock) || 0;
+          const matForzado = [{ material: val, stock: stockReal, fechaDisplay: "Material manual", isExpired: false, isManual: true }];
           wizardState.payloadActual.itemsExtraidos.forEach(item => {
             if (String(item.Producto_Cod).trim() === cod) {
               item.EAN_Mapeado = cod;
@@ -466,6 +503,80 @@
     } catch (e) {
       mostrarError("Error procesando Materiales SAP manuales: " + e.message);
     }
+  }
+
+  /**
+   * Valida los Material SAP digitados a mano contra el catálogo (Productos + Bodega).
+   * Marca en rojo los campos inválidos y devuelve la lista de problemas (vacía si todo está bien).
+   */
+  function wizardValidarInputsMaterial(inputs) {
+    const errores = [];
+    inputs.forEach(input => {
+      const val = input.value.trim();
+      input.classList.remove('border-red-600', 'bg-red-50');
+      if (!val) return;
+
+      if (!wizardState.catalogoMateriales) {
+        const msg = wizardState.catalogoError
+          ? `No se pudo cargar el catálogo de materiales para validar (${wizardState.catalogoError}).`
+          : 'El catálogo de materiales aún se está cargando. Intente de nuevo en unos segundos.';
+        if (!errores.includes(msg)) errores.push(msg);
+        return;
+      }
+      if (!wizardState.catalogoMateriales[val]) {
+        input.classList.add('border-red-600', 'bg-red-50');
+        errores.push(`El Material SAP <b>${val}</b> no existe en Productos ni en Bodega.`);
+      }
+    });
+    return errores;
+  }
+
+  /**
+   * Unidades por Material SAP ya asignadas a OTROS clientes CEN configurados en este lote.
+   * Sin esto, cada cliente se validaba contra el stock total y el mismo stock se prometía varias veces.
+   */
+  function wizardReservasOtrosClientesCen() {
+    const reservas = {};
+    if (wizardState.cliente !== 'CEN') return reservas;
+    for (const k in wizardState.clientesCenConfigurados) {
+      if (k === wizardState.clienteCenSeleccionado) continue;
+      const conf = wizardState.clientesCenConfigurados[k];
+      conf.items.forEach(item => {
+        const mat = conf.materialesSeleccionados[item.Item_ID];
+        if (!mat || (conf.noActualizadosSeleccionados && conf.noActualizadosSeleccionados[item.Item_ID])) return;
+        reservas[mat] = (reservas[mat] || 0) + (parseInt(item.Cant) || 0);
+      });
+    }
+    return reservas;
+  }
+
+  /**
+   * Copia de los lotes con el stock ya reservado descontado, lote a lote en el orden recibido.
+   * Cada lote conserva en `reservado` cuántas unidades se le descontaron.
+   */
+  function wizardDescontarReservas(lotes, reservas) {
+    const pendiente = Object.assign({}, reservas);
+    return lotes.map(lote => {
+      const copia = Object.assign({}, lote);
+      const porDescontar = pendiente[lote.material] || 0;
+      if (porDescontar > 0) {
+        const usado = Math.min(Number(copia.stock) || 0, porDescontar);
+        copia.stock = (Number(copia.stock) || 0) - usado;
+        copia.reservado = usado;
+        pendiente[lote.material] = porDescontar - usado;
+      }
+      return copia;
+    });
+  }
+
+  /**
+   * Stock disponible de un material digitado a mano: el de Bodega menos lo reservado por otros clientes CEN.
+   */
+  function wizardStockDisponibleMaterial(material) {
+    const info = wizardState.catalogoMateriales && wizardState.catalogoMateriales[material];
+    const stock = info ? (Number(info.stock) || 0) : 0;
+    const reservado = wizardReservasOtrosClientesCen()[material] || 0;
+    return Math.max(0, stock - reservado);
   }
 
   function wizardRenderEtapaPrincipal() {
@@ -503,6 +614,14 @@
       mapaAgrupacion[item.Producto_Cod].Items_Originales.push(item);
     });
     wizardState.productosAgrupados = Object.values(mapaAgrupacion);
+
+    // CEN: descontar el stock que ya se asignó a otros clientes del mismo lote
+    const reservas = wizardReservasOtrosClientesCen();
+    if (Object.keys(reservas).length > 0) {
+      wizardState.productosAgrupados.forEach(grp => {
+        grp.Materiales_Disponibles = wizardDescontarReservas(grp.Materiales_Disponibles, reservas);
+      });
+    }
 
     let stepCounter = 1;
 
@@ -581,7 +700,8 @@
           let extraInfo = m.stock === 0 ? " ❌ [SIN STOCK]" : (m.stock < grp.CantTotal ? " ⚠️ [BACK ORDER]" : " ✅ [OK]");
           let fecha = m.fechaDisplay && m.fechaDisplay !== "Sin fecha" ? m.fechaDisplay : 'N/A';
           let selectedAttr = (idx === bestIndex) ? " selected" : "";
-          return `<option value="${idx}"${selectedAttr}>Vence: ${fecha} (Stock: ${m.stock}) - ID: ${m.material}${extraInfo}</option>`;
+          let reservaInfo = m.reservado ? ` · ${m.reservado} ud. ya asignadas a otros clientes` : "";
+          return `<option value="${idx}"${selectedAttr}>Vence: ${fecha} (Stock: ${m.stock}${reservaInfo}) - ID: ${m.material}${extraInfo}</option>`;
         }).join('');
 
         options += `<option value="MANUAL_OVERRIDE">✏️ Digitar otro Material SAP manual...</option>`;
@@ -663,6 +783,12 @@
   }
 
   function wizardAvanzarOGuardar() {
+    const erroresMat = wizardValidarInputsMaterial(document.querySelectorAll('[id^="wizard_override_mat_"]'));
+    if (erroresMat.length > 0) {
+      mostrarError(erroresMat.join('<br>'));
+      return;
+    }
+
     if (wizardState.cliente === 'CEN') {
       wizardGuardarConfiguracionClienteCenActual();
     } else {
@@ -701,7 +827,8 @@
 
         if (inputOverride && inputOverride.value.trim() !== "") {
           matFinal = inputOverride.value.trim();
-          isBackOrder = false;
+          // Back order según el stock real del material digitado (ya validado contra el catálogo)
+          isBackOrder = wizardStockDisponibleMaterial(matFinal) < grp.CantTotal;
           isNoActualizado = false;
         } else if (sel && sel.value !== "MANUAL_OVERRIDE") {
           let idx = parseInt(sel.value);
@@ -800,7 +927,9 @@
       materialesSeleccionados: todosMateriales,
       backordersSeleccionados: todosBackorders,
       noActualizadosSeleccionados: todosNoActualizados,
-      notificarKAM: notificarKAM
+      notificarKAM: notificarKAM,
+      // OCs que trae cada Excel: el backend solo lo mueve a Procesados si todas quedaron registradas
+      estadoArchivos: wizardState.payloadRaw.estadoArchivos || {}
     };
 
     wizardEjecutarGuardadoBackend(paqueteConsolidadoCen);
@@ -833,7 +962,8 @@
 
         if (inputOverride && inputOverride.value.trim() !== "") {
           matFinal = inputOverride.value.trim();
-          isBackOrder = false;
+          // Back order según el stock real del material digitado (ya validado contra el catálogo)
+          isBackOrder = wizardStockDisponibleMaterial(matFinal) < grp.CantTotal;
           isNoActualizado = false;
         } else if (sel && sel.value !== "MANUAL_OVERRIDE") {
           let idx = parseInt(sel.value);
@@ -876,6 +1006,28 @@
     wizardEjecutarGuardadoBackend(paqueteFinal);
   }
 
+  /**
+   * Descarga en el navegador el CSV que devuelve el backend (contenido en Base64 UTF-8).
+   */
+  function descargarArchivoCSV(base64, fileName) {
+    if (!base64) {
+      mostrarError("No se recibió el contenido del CSV para descargar. El archivo quedó guardado en Drive.");
+      return;
+    }
+    const binario = atob(base64);
+    const bytes = new Uint8Array(binario.length);
+    for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'text/csv;charset=utf-8' }));
+    const enlace = document.createElement('a');
+    enlace.href = url;
+    enlace.download = fileName || 'Pedido_SAP.csv';
+    document.body.appendChild(enlace);
+    enlace.click();
+    document.body.removeChild(enlace);
+    URL.revokeObjectURL(url);
+  }
+
   function wizardEjecutarGuardadoBackend(paqueteFinal) {
     const cfg = wizardState.config;
     ['wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-banner-cliente-actual', 'wizard-seccion-clientes-cen'].forEach(id => {
@@ -901,11 +1053,12 @@
         wizardGenerarResumenAcumuladoOC();
 
         const clientesTexto = wizardState.cliente === 'CEN' ? `Se generó un único archivo CSV unificado para todos los clientes tramitados.` : 'El archivo CSV ya quedó guardado en Drive.';
-        Swal.fire({ 
-          icon: 'success', 
-          title: '¡Proceso Completado!', 
-          text: clientesTexto, 
-          confirmButtonColor: '#2B2830' 
+        // El mensaje del backend incluye avisos (ej. Excel CEN retenidos por OCs pendientes)
+        Swal.fire({
+          icon: 'success',
+          title: '¡Proceso Completado!',
+          text: (respuestaObj && respuestaObj.mensaje) ? `${respuestaObj.mensaje} ${clientesTexto}` : clientesTexto,
+          confirmButtonColor: '#2B2830'
         });
       })
       .withFailureHandler((err) => { 

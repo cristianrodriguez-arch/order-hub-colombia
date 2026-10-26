@@ -373,6 +373,84 @@ function obtenerMapaBodegaGeneral_(sheet) {
 }
 
 /**
+ * Alta de un destinatario en la hoja Destinatarios. Única función para todos los clientes.
+ * Escribe cada dato en la columna de su encabezado (fila 1), así que no depende del
+ * orden de las columnas. Si falta una columna obligatoria, no escribe nada.
+ *
+ * @param {Object} datos { idOrigen, nombreOrigen, idDestino, nombreDestino, cruceCliente, ciudad }
+ * @return {Object} { success: true }
+ */
+function guardarNuevoDestinatario(datos) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const nombreHoja = CONFIG.SHEET_DESTINATARIOS || "Destinatarios";
+  let sh = ss.getSheetByName(nombreHoja);
+  if (!sh) {
+    sh = ss.insertSheet(nombreHoja);
+    sh.appendRow(["Id_origen", "Nombre_origen", "Id_destino", "Nombre_destino", "Cruce_cliente", "Ciudad"]);
+  }
+
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h).trim().toLowerCase());
+  const columnas = {
+    idOrigen: headers.indexOf('id_origen'),
+    nombreOrigen: headers.indexOf('nombre_origen'),
+    idDestino: headers.indexOf('id_destino'),
+    nombreDestino: headers.indexOf('nombre_destino'),
+    cruceCliente: headers.indexOf('cruce_cliente'),
+    // Misma regla que obtenerDiccionarioDestinatarios para ubicar la ciudad
+    ciudad: headers.findIndex(h => h.includes('ciudad') || h.includes('poblacion') || h.includes('municipio'))
+  };
+
+  const faltantes = Object.keys(columnas).filter(k => columnas[k] === -1);
+  if (faltantes.length > 0) {
+    throw new Error(`La hoja ${nombreHoja} no tiene las columnas: ${faltantes.join(", ")}. No se guardó el destinatario.`);
+  }
+
+  const fila = new Array(headers.length).fill("");
+  for (const campo in columnas) {
+    fila[columnas[campo]] = datos[campo] !== undefined && datos[campo] !== null ? String(datos[campo]).trim() : "";
+  }
+  sh.appendRow(fila);
+  return { success: true };
+}
+
+/**
+ * Catálogo de Materiales SAP válidos con su stock total en Bodega.
+ * El wizard lo usa para validar los materiales digitados a mano: solo se acepta un
+ * material que exista en Productos o en Bodega, y su stock es el real (nunca infinito).
+ *
+ * @return {Object} { "<material>": { stock: Number, descripcion: String } }
+ */
+function obtenerCatalogoMaterialesSap() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const catalogo = {};
+  const norm = x => String(x).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+
+  const shProd = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
+  if (!shProd) throw new Error("No se encontró la hoja Productos para validar materiales.");
+  const dataProd = shProd.getDataRange().getValues();
+  const headProd = dataProd[0].map(norm);
+  const colMat = headProd.findIndex(h => h.includes("MATERIAL"));
+  const colDesc = headProd.findIndex(h => h.includes("DESCRIPCION") || h.includes("NOMBRE") || h.includes("PRODUCTO"));
+  if (colMat === -1) throw new Error("La hoja Productos no tiene columna de Material.");
+
+  for (let i = 1; i < dataProd.length; i++) {
+    const mat = String(dataProd[i][colMat]).trim();
+    if (!mat || catalogo[mat]) continue;
+    catalogo[mat] = { stock: 0, descripcion: colDesc !== -1 ? String(dataProd[i][colDesc]).trim() : "" };
+  }
+
+  const mapaBodega = obtenerMapaBodegaGeneral_(ss.getSheetByName(CONFIG.SHEET_BODEGA || "Bodega"));
+  for (const ean in mapaBodega) {
+    mapaBodega[ean].forEach(lote => {
+      if (!lote.material) return;
+      if (!catalogo[lote.material]) catalogo[lote.material] = { stock: 0, descripcion: "" };
+      catalogo[lote.material].stock += Number(lote.stock) || 0;
+    });
+  }
+  return catalogo;
+}
+
+/**
  * Genera el contenido del CSV de carga a SAP aplicando el formato único CSV_SAP.
  * Lo usan los tres motores (MEDIPIEL, CMX, CEN): ninguno arma filas del CSV por su cuenta.
  *

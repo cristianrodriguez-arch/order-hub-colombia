@@ -803,11 +803,11 @@ function guardarDefinitivoCMX(paquete) {
       }
     }
     
-    let nuevoIdNumero = maxConsecutive + 1;
-    const nuevoIdStr = prefix + String(nuevoIdNumero).padStart(4, "0");
-
+    // Un consecutivo por OC (antes todas las OCs del lote compartían el mismo Id)
     const filasNuevas = [];
-    
+    const pedidosRegistrados = [];
+    const idPorPedido = {};
+
     paquete.pedidos.forEach(p => {
       const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
       let totalUnidades = 0;
@@ -830,10 +830,15 @@ function guardarDefinitivoCMX(paquete) {
 
       if (totalUnidades === 0) return;
 
+      maxConsecutive++;
+      const idPedido = prefix + String(maxConsecutive).padStart(4, "0");
+      idPorPedido[p.Pedido_ID] = idPedido;
+      pedidosRegistrados.push(p);
+
       const fechaEnt = paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "";
 
       filasNuevas.push([
-        nuevoIdStr,
+        idPedido,
         p.Pedido_ID,
         configCli.SOLICITANTE,
         configCli.NOMBRE_CLIENTE || "CMX S.A.S.",
@@ -850,30 +855,17 @@ function guardarDefinitivoCMX(paquete) {
       ]);
     });
 
-    if (filasNuevas.length > 0) {
-      const lastRow = shConsolidado.getLastRow();
-      shConsolidado.getRange(lastRow + 1, 1, filasNuevas.length, filasNuevas[0].length).setValues(filasNuevas);
-    } else {
+    if (filasNuevas.length === 0) {
       throw new Error("No hay posiciones válidas para inyectar al consolidado.");
     }
 
-    const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
-    paquete.pedidos.forEach(p => {
-      if (p.Archivo_Id) {
-        try {
-          const file = DriveApp.getFileById(p.Archivo_Id);
-          file.moveTo(folderDestino);
-          
-          const originalName = file.getName();
-          const extIdx = originalName.lastIndexOf(".");
-          const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsm";
-          file.setName("Pedido_" + nuevoIdStr + ext);
-        } catch (ignore) {}
-      }
-    });
+    const idsGenerados = pedidosRegistrados.map(p => idPorPedido[p.Pedido_ID]);
+    const paqueteRegistrado = Object.assign({}, paquete, { pedidos: pedidosRegistrados });
 
-    const csvData = cmx_generarCsvSap_(paquete);
-    const fileName = `Pedido_${nuevoIdStr}.csv`;
+    // 1. Guardar el CSV ANTES de CONSOLIDADO: si falla, la OC no queda marcada como procesada.
+    const csvData = cmx_generarCsvSap_(paqueteRegistrado);
+    const fileName = `Pedido_${idsGenerados[0]}.csv`;
+    let archivoCsv = null;
 
     try {
       let csvFolder = null;
@@ -884,19 +876,45 @@ function guardarDefinitivoCMX(paquete) {
       } else {
         csvFolder = parentFolder.createFolder("CSV");
       }
-      csvFolder.createFile(fileName, csvData, MimeType.PLAIN_TEXT);
+      archivoCsv = csvFolder.createFile(fileName, csvData, MimeType.PLAIN_TEXT);
     } catch (csvDriveErr) {
       try {
         const parentFolder = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
-        parentFolder.createFile(fileName, csvData, MimeType.PLAIN_TEXT);
+        archivoCsv = parentFolder.createFile(fileName, csvData, MimeType.PLAIN_TEXT);
       } catch (e) {
-        console.log("Error al respaldar el CSV en Drive: " + e.message);
+        throw new Error("No se pudo guardar el CSV en Drive (no se registró nada en CONSOLIDADO): " + e.message);
       }
     }
 
+    // 2. Escribir CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.
+    try {
+      const lastRow = shConsolidado.getLastRow();
+      shConsolidado.getRange(lastRow + 1, 1, filasNuevas.length, filasNuevas[0].length).setValues(filasNuevas);
+      SpreadsheetApp.flush();
+    } catch (errSheets) {
+      try { archivoCsv.setTrashed(true); } catch (ignore) {}
+      throw new Error("Fallo al escribir en CONSOLIDADO; el CSV se envió a la papelera: " + errSheets.message);
+    }
+
+    // 3. Mover y renombrar cada Excel con el consecutivo de su propia OC
+    const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
+    pedidosRegistrados.forEach(p => {
+      if (p.Archivo_Id) {
+        try {
+          const file = DriveApp.getFileById(p.Archivo_Id);
+          file.moveTo(folderDestino);
+
+          const originalName = file.getName();
+          const extIdx = originalName.lastIndexOf(".");
+          const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsm";
+          file.setName("Pedido_" + idPorPedido[p.Pedido_ID] + ext);
+        } catch (ignore) {}
+      }
+    });
+
     if (paquete.notificarKAM) {
       try {
-        cmx_enviarNotificacionKam_(paquete, nuevoIdStr, paquete.pedidos[0].Ciudad || "LA ESTRELLA");
+        cmx_enviarNotificacionKam_(paqueteRegistrado, idsGenerados.join(", "), pedidosRegistrados[0].Ciudad || "LA ESTRELLA");
       } catch (eMailError) {
         console.log("Fallo el envío del correo: " + eMailError.message);
       }
@@ -904,7 +922,7 @@ function guardarDefinitivoCMX(paquete) {
 
     return {
       success: true,
-      mensaje: `Se han procesado ${filasNuevas.length} pedidos. Código de consolidación: ${nuevoIdStr}`,
+      mensaje: `Se han procesado ${filasNuevas.length} pedidos. Consecutivos asignados: ${idsGenerados.join(", ")}`,
       csvData: Utilities.base64Encode(csvData, Utilities.Charset.UTF_8).replace(/[\r\n]/g, ""),
       fileName: fileName
     };
@@ -947,7 +965,7 @@ function cmx_generarCsvSap_(paquete) {
   return construirCsvSap_(pedidosCsv);
 }
 
-function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
+function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
   const kamInfo = cmx_getKamInitialsAndName_(CONFIG.CLIENTES["CMX"].SOLICITANTE);
   const kamEmail = kamInfo.email;
 
@@ -959,7 +977,7 @@ function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
       </div>
       
       <p style="font-size: 14px; line-height: 1.6; color: #4B5563;">Estimada <strong>${kamInfo.name}</strong>,</p>
-      <p style="font-size: 14px; line-height: 1.6; color: #4B5563;">Te informamos que se han consolidado de manera exitosa los nuevos pedidos de <strong>CMX S.A.S.</strong> para la ciudad de <strong>${ciudadDestino}</strong>. El consecutivo asignado es el <span style="font-family: monospace; font-weight: bold; background-color: #F3F4F6; padding: 2px 6px; border-radius: 4px; border: 1px solid #E5E7EB;">${nuevoIdStr}</span>.</p>
+      <p style="font-size: 14px; line-height: 1.6; color: #4B5563;">Te informamos que se han consolidado de manera exitosa los nuevos pedidos de <strong>CMX S.A.S.</strong> para la ciudad de <strong>${ciudadDestino}</strong>. Consecutivo(s) asignado(s): <span style="font-family: monospace; font-weight: bold; background-color: #F3F4F6; padding: 2px 6px; border-radius: 4px; border: 1px solid #E5E7EB;">${idsAsignados}</span>.</p>
       
       <h2 style="font-size: 16px; font-weight: 700; border-bottom: 1px solid #F3F4F6; padding-bottom: 8px; margin-top: 25px; color: #2B2830;">Detalle de Facturación por Orden de Compra</h2>
       <div style="margin-top: 15px;">
@@ -1101,24 +1119,4 @@ function cmx_enviarNotificacionKam_(paquete, nuevoIdStr, ciudadDestino) {
     subject: `📦 Resumen Pedidos CMX - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,
     htmlBody: htmlBody
   });
-}
-
-function cmx_guardarNuevoDestinatario(dest) {
-  try {
-    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const shDest = ss.getSheetByName("Destinatarios");
-    if (!shDest) throw new Error("No se encontró la hoja Destinatarios.");
-    
-    shDest.appendRow([
-      dest.idOrigen,
-      dest.nombreOrigen,
-      dest.cruceCliente,
-      dest.idDestino,
-      dest.nombreDestino
-    ]);
-    
-    return { success: true };
-  } catch (err) {
-    throw new Error("Fallo al guardar destinatario: " + err.message);
-  }
 }
