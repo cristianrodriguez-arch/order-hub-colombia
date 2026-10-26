@@ -554,8 +554,7 @@ function guardarDefinitivoCEN(paquete) {
       }
     }
 
-    const csvHeader = [ "Contador", "Nº Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc", "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posición pedido", "Material", "EAN", "Cantidad" ];
-    filasCSV.unshift(csvHeader);
+    // Sin fila de encabezado: el cargador SAP no la espera.
     const csvContent = filasCSV.map(r => r.join(";")).join("\n");
 
     const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");

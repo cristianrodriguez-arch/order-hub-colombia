@@ -248,8 +248,8 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
 
   let csvFileName = `Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`;
   let csvString = "";
-  
-  filasCSV.unshift(medipiel_getEstructuraCSVHeaders_());
+
+  // Sin fila de encabezado: el cargador SAP no la espera.
   csvString = filasCSV.map(row => row.map(val => {
     let s = String(val);
     return (s.includes(';') || s.includes('"')) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -607,10 +607,6 @@ function medipiel_limpiarOc_(val) {
   }
   if (s.includes(".")) s = s.split(".")[0];
   return s.trim();
-}
-
-function medipiel_getEstructuraCSVHeaders_() { 
-  return [ "Contador", "N Pedido SAP", "Clase pedido", "Org ventas", "Canal", "Sector", "Solicitante", "Destinatario Merc", "Num pedido cliente", "Fecha preferente Entrega", "Descuento ZTK1 (%)", "Motivo pedido", "Posicion pedido", "Material", "EAN", "Cantidad" ]; 
 }
 
 function medipiel_normalizeKey_(str) {
