@@ -820,10 +820,12 @@ function guardarDefinitivoCMX(paquete) {
         const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
                                 (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
 
+        // Las líneas sin Material SAP también cuentan: van al CSV con Material vacío para que
+        // SAP las deje como back order (igual que MEDIPIEL y CEN). Solo no suman valor.
+        const cant = parseInt(item.Cant) || 0;
+        totalUnidades += cant;
         if (!isNoActualizado) {
-          const cant = parseInt(item.Cant) || 0;
           const valUnit = parseFloat(item.Valor_Unitario) || 0;
-          totalUnidades += cant;
           totalValor += (cant * valUnit);
         }
       });
