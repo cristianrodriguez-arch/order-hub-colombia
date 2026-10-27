@@ -579,6 +579,70 @@
     return Math.max(0, stock - reservado);
   }
 
+  /** Lote que se propone por defecto: el primero con stock suficiente o, si no hay, el primero. */
+  function wizardIndiceMejorMaterial(grp) {
+    const idx = grp.Materiales_Disponibles.findIndex(m => m.stock >= grp.CantTotal);
+    return idx === -1 ? 0 : idx;
+  }
+
+  /**
+   * Opciones del desplegable de Material SAP: un lote por opción (preseleccionado el mejor)
+   * y, al final, la opción para digitar otro material a mano.
+   */
+  function wizardOpcionesMaterialHtml(grp) {
+    const bestIndex = wizardIndiceMejorMaterial(grp);
+    const opciones = grp.Materiales_Disponibles.map((m, idx) => {
+      const extraInfo = m.stock === 0 ? " ❌ [SIN STOCK]" : (m.stock < grp.CantTotal ? " ⚠️ [BACK ORDER]" : " ✅ [OK]");
+      const fecha = m.fechaDisplay && m.fechaDisplay !== "Sin fecha" ? m.fechaDisplay : 'N/A';
+      const selectedAttr = (idx === bestIndex) ? " selected" : "";
+      const reservaInfo = m.reservado ? ` · ${m.reservado} ud. ya asignadas a otros clientes` : "";
+      return `<option value="${idx}"${selectedAttr}>Vence: ${fecha} (Stock: ${m.stock}${reservaInfo}) - ID: ${m.material}${extraInfo}</option>`;
+    }).join('');
+    return opciones + `<option value="MANUAL_OVERRIDE">✏️ Digitar otro Material SAP manual...</option>`;
+  }
+
+  /**
+   * Desplegable de Material SAP con su campo manual (oculto hasta elegir "Digitar otro").
+   * Lo usan la sección de stock OK y la de back order, para que el cambio de material sea igual en ambas.
+   */
+  function wizardBloqueMaterialHtml(grp) {
+    const cod = grp.Producto_Cod;
+    return `
+      <select id="wizard_mat_${cod}" onchange="wizardToggleManualInputMulti('${cod}', this.value)" class="w-full mt-1 p-2 text-sm border border-gray-300 bg-gray-50 rounded outline-none focus:border-isdin-red cursor-pointer font-mono">
+        ${wizardOpcionesMaterialHtml(grp)}
+      </select>
+      <div id="container_manual_multi_${cod}" class="hidden mt-1 pt-1">
+        <input type="text" id="wizard_override_mat_${cod}" placeholder="Digitar nuevo Material SAP manual..."
+               class="w-full p-2 text-xs border border-isdin-red rounded outline-none bg-red-50/30 font-mono">
+      </div>`;
+  }
+
+  /**
+   * Material SAP elegido para un producto: el del desplegable o, si está en "Digitar otro",
+   * el que se escribió a mano. Es la única regla de selección para los tres motores.
+   * @return {{ material: String, stock: Number }} material "" si no hay uno válido.
+   */
+  function wizardResolverMaterial(grp) {
+    const cod = grp.Producto_Cod;
+    const sel = document.getElementById(`wizard_mat_${cod}`);
+    if (sel && sel.value === "MANUAL_OVERRIDE") {
+      const input = document.getElementById(`wizard_override_mat_${cod}`);
+      const mat = input ? input.value.trim() : "";
+      return { material: mat, stock: mat ? wizardStockDisponibleMaterial(mat) : 0 };
+    }
+    const idx = sel ? parseInt(sel.value, 10) : wizardIndiceMejorMaterial(grp);
+    const lote = grp.Materiales_Disponibles[idx];
+    return lote ? { material: lote.material || "", stock: Number(lote.stock) || 0 } : { material: "", stock: 0 };
+  }
+
+  /** Campos manuales que están activos (su desplegable está en "Digitar otro Material SAP manual"). */
+  function wizardInputsManualActivos() {
+    return Array.from(document.querySelectorAll('[id^="wizard_override_mat_"]')).filter(input => {
+      const sel = document.getElementById(`wizard_mat_${input.id.replace("wizard_override_mat_", "")}`);
+      return sel && sel.value === "MANUAL_OVERRIDE";
+    });
+  }
+
   function wizardRenderEtapaPrincipal() {
     wizardState.payloadActual.itemsExtraidos.forEach(item => {
       // VALIDACIÓN FLEXIBLE DE MATERIAL SAP: Permite códigos de hasta 12 dígitos oficiales (ej: 690033624480)
@@ -662,28 +726,18 @@
     // 2. Asignación Automática (Solo productos con stock OK)
     if (itemsAuto.length > 0) {
       document.getElementById('wizard-seccion-auto').classList.remove('hidden');
-      document.getElementById('wizard-titulo-auto').innerText = `${stepCounter++}. Asignación Automática (Materiales OK)`;
-      document.getElementById('wizard-tabla-auto').innerHTML = itemsAuto.map(grp => {
-        let bestMat = grp.Materiales_Disponibles.find(m => m.stock >= grp.CantTotal) || grp.Materiales_Disponibles[0];
-        let matCode = bestMat ? bestMat.material : "SIN_MATERIAL";
-
-        return `
+      document.getElementById('wizard-titulo-auto').innerText = `${stepCounter++}. Productos con stock OK (confirme o cambie el Material SAP)`;
+      document.getElementById('wizard-tabla-auto').innerHTML = itemsAuto.map(grp => `
           <div class="relative p-4 rounded-lg border border-green-200 bg-white shadow-sm flex flex-col gap-2">
             <div>
               <p class="text-sm font-bold text-isdin-black leading-tight" title="${grp.Descripcion}">${grp.Descripcion} <span class="text-xs text-gray-400 font-mono font-normal">| EAN: ${grp.Producto_Cod}</span></p>
               <div class="flex items-center flex-wrap gap-2 mt-2 mb-1">
                 <span class="text-[10px] bg-green-100 text-green-800 border border-green-200 px-2 py-0.5 rounded font-bold">Req: ${grp.CantTotal} ud.</span>
-                <span class="text-[10px] text-gray-500">Auto Material SAP: <b>${matCode}</b></span>
                 <span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded text-[10px] font-bold">✅ OK</span>
               </div>
-              <div class="mt-2 pt-2 border-t border-gray-100 flex items-center gap-2">
-                <span class="text-xs text-gray-500 font-semibold whitespace-nowrap">✏️ Cambiar Material SAP:</span>
-                <input type="text" id="wizard_override_mat_${grp.Producto_Cod}" placeholder="Ingresar nuevo ID (ej: 690032151480)..."
-                       class="w-full p-1.5 text-xs border border-gray-300 rounded outline-none focus:border-isdin-red bg-gray-50 focus:bg-white font-mono">
-              </div>
+              ${wizardBloqueMaterialHtml(grp)}
             </div>
-          </div>`;
-      }).join('');
+          </div>`).join('');
     } else {
       document.getElementById('wizard-seccion-auto').classList.add('hidden');
     }
@@ -692,21 +746,7 @@
     if (itemsMulti.length > 0) {
       document.getElementById('wizard-seccion-materiales').classList.remove('hidden');
       document.getElementById('wizard-titulo-materiales').innerText = `${stepCounter++}. Múltiples Lotes / Alertas de Stock (Back Order)`;
-      document.getElementById('wizard-tabla-materiales').innerHTML = itemsMulti.map(grp => {
-        let bestIndex = grp.Materiales_Disponibles.findIndex(m => m.stock >= grp.CantTotal);
-        if (bestIndex === -1) bestIndex = 0;
-
-        let options = grp.Materiales_Disponibles.map((m, idx) => {
-          let extraInfo = m.stock === 0 ? " ❌ [SIN STOCK]" : (m.stock < grp.CantTotal ? " ⚠️ [BACK ORDER]" : " ✅ [OK]");
-          let fecha = m.fechaDisplay && m.fechaDisplay !== "Sin fecha" ? m.fechaDisplay : 'N/A';
-          let selectedAttr = (idx === bestIndex) ? " selected" : "";
-          let reservaInfo = m.reservado ? ` · ${m.reservado} ud. ya asignadas a otros clientes` : "";
-          return `<option value="${idx}"${selectedAttr}>Vence: ${fecha} (Stock: ${m.stock}${reservaInfo}) - ID: ${m.material}${extraInfo}</option>`;
-        }).join('');
-
-        options += `<option value="MANUAL_OVERRIDE">✏️ Digitar otro Material SAP manual...</option>`;
-
-        return `
+      document.getElementById('wizard-tabla-materiales').innerHTML = itemsMulti.map(grp => `
           <div class="relative bg-white p-4 rounded-lg border border-blue-200 shadow-sm flex flex-col gap-2">
             <div>
               <p class="text-sm font-bold text-isdin-black leading-tight" title="${grp.Descripcion}">${grp.Descripcion} <span class="text-xs text-gray-400 font-mono font-normal">| EAN: ${grp.Producto_Cod}</span></p>
@@ -715,15 +755,8 @@
                 <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-[10px] font-bold">⚠️ BACK ORDER</span>
               </div>
             </div>
-            <select id="wizard_mat_${grp.Producto_Cod}" onchange="wizardToggleManualInputMulti('${grp.Producto_Cod}', this.value)" class="w-full mt-1 p-2 text-sm border border-gray-300 bg-gray-50 rounded outline-none focus:border-isdin-red cursor-pointer font-mono">
-              ${options}
-            </select>
-            <div id="container_manual_multi_${grp.Producto_Cod}" class="hidden mt-1 pt-1">
-              <input type="text" id="wizard_override_mat_${grp.Producto_Cod}" placeholder="Digitar nuevo Material SAP manual..."
-                     class="w-full p-2 text-xs border border-isdin-red rounded outline-none bg-red-50/30 font-mono">
-            </div>
-          </div>`;
-      }).join('');
+            ${wizardBloqueMaterialHtml(grp)}
+          </div>`).join('');
     } else {
       document.getElementById('wizard-seccion-materiales').classList.add('hidden');
     }
@@ -783,7 +816,7 @@
   }
 
   function wizardAvanzarOGuardar() {
-    const erroresMat = wizardValidarInputsMaterial(document.querySelectorAll('[id^="wizard_override_mat_"]'));
+    const erroresMat = wizardValidarInputsMaterial(wizardInputsManualActivos());
     if (erroresMat.length > 0) {
       mostrarError(erroresMat.join('<br>'));
       return;
@@ -813,49 +846,19 @@
 
     wizardState.productosAgrupados.forEach(grp => {
       let matFinal = "";
-      let selectedStock = 0;
       let isBackOrder = false;
       let isNoActualizado = false;
 
       if (grp.isNoActualizado) {
-        matFinal = "";
         isNoActualizado = true;
-        isBackOrder = false;
       } else {
-        const inputOverride = document.getElementById(`wizard_override_mat_${grp.Producto_Cod}`);
-        const sel = document.getElementById(`wizard_mat_${grp.Producto_Cod}`);
-
-        if (inputOverride && inputOverride.value.trim() !== "") {
-          matFinal = inputOverride.value.trim();
-          // Back order según el stock real del material digitado (ya validado contra el catálogo)
-          isBackOrder = wizardStockDisponibleMaterial(matFinal) < grp.CantTotal;
-          isNoActualizado = false;
-        } else if (sel && sel.value !== "MANUAL_OVERRIDE") {
-          let idx = parseInt(sel.value);
-          let matCand = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].material : "";
-          selectedStock = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].stock : 0;
-          
-          if (!matCand || matCand.includes("SIN_") || matCand === grp.Producto_Cod || (matCand.length === 13 && matCand.startsWith("84"))) {
-            matFinal = "";
-            isNoActualizado = true;
-            isBackOrder = false;
-          } else {
-            matFinal = matCand;
-            isBackOrder = selectedStock < grp.CantTotal;
-          }
+        const r = wizardResolverMaterial(grp);
+        matFinal = r.material;
+        if (!matFinal || matFinal.includes("SIN_") || matFinal === grp.Producto_Cod || (matFinal.length === 13 && matFinal.startsWith("84"))) {
+          matFinal = "";
+          isNoActualizado = true;
         } else {
-          let bestMat = grp.Materiales_Disponibles.find(m => m.stock >= grp.CantTotal) || grp.Materiales_Disponibles[0];
-          let matCand = bestMat ? bestMat.material : "";
-
-          if (!matCand || matCand.includes("SIN_") || matCand === grp.Producto_Cod || (matCand.length === 13 && matCand.startsWith("84"))) {
-            matFinal = "";
-            isNoActualizado = true;
-            isBackOrder = false;
-          } else {
-            matFinal = matCand;
-            const totalStockBodega = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
-            isBackOrder = totalStockBodega < grp.CantTotal;
-          }
+          isBackOrder = r.stock < grp.CantTotal;
         }
       }
 
@@ -948,39 +951,19 @@
 
     wizardState.productosAgrupados.forEach(grp => {
       let matFinal = "";
-      let selectedStock = 0;
       let isBackOrder = false;
       let isNoActualizado = false;
 
       if (grp.isNoActualizado) {
-        matFinal = "";
         isNoActualizado = true;
-        isBackOrder = false;
       } else {
-        const inputOverride = document.getElementById(`wizard_override_mat_${grp.Producto_Cod}`);
-        const sel = document.getElementById(`wizard_mat_${grp.Producto_Cod}`);
-
-        if (inputOverride && inputOverride.value.trim() !== "") {
-          matFinal = inputOverride.value.trim();
-          // Back order según el stock real del material digitado (ya validado contra el catálogo)
-          isBackOrder = wizardStockDisponibleMaterial(matFinal) < grp.CantTotal;
-          isNoActualizado = false;
-        } else if (sel && sel.value !== "MANUAL_OVERRIDE") {
-          let idx = parseInt(sel.value);
-          matFinal = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].material : "";
-          selectedStock = grp.Materiales_Disponibles[idx] ? grp.Materiales_Disponibles[idx].stock : 0;
-          isBackOrder = selectedStock < grp.CantTotal;
-        } else {
-          let bestMat = grp.Materiales_Disponibles.find(m => m.stock >= grp.CantTotal) || grp.Materiales_Disponibles[0];
-          matFinal = bestMat ? bestMat.material : (grp.EAN_Mapeado || "SIN_MATERIAL");
-          const totalStockBodega = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
-          isBackOrder = totalStockBodega < grp.CantTotal;
-        }
-
+        const r = wizardResolverMaterial(grp);
+        matFinal = r.material;
         if (!matFinal || matFinal.includes("SIN_") || matFinal === grp.Producto_Cod || (matFinal.length === 13 && matFinal.startsWith("84"))) {
           matFinal = "";
           isNoActualizado = true;
-          isBackOrder = false;
+        } else {
+          isBackOrder = r.stock < grp.CantTotal;
         }
       }
 
