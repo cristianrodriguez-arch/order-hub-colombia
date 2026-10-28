@@ -150,8 +150,10 @@ function nombreArchivoSap_(nombre) {
 }
 
 /**
- * Envía el correo a la KAM. En modo prueba nunca va a la KAM: va a CORREO_DESTINO con el asunto marcado,
- * y si CORREO_DESTINO está vacío no se envía nada.
+ * Envía el correo a la KAM.
+ * - Producción: va a la dirección de la KAM (columna Correo de Asignacion_KAM).
+ * - Prueba: va a la dirección de la KAM de la copia de prueba (en la copia todas son del equipo de pruebas),
+ *   con "[PRUEBA]" en el asunto. Si CONFIG.PRUEBA.CORREO_DESTINO tiene un correo, todos los avisos van ahí.
  *
  * @param {Object} opts { to, subject, htmlBody }
  */
@@ -160,13 +162,10 @@ function enviarCorreoKam_(opts) {
     MailApp.sendEmail({ to: opts.to, subject: opts.subject, htmlBody: opts.htmlBody });
     return;
   }
-  if (!CONFIG.PRUEBA.CORREO_DESTINO) {
-    console.log(`PRUEBA: correo para ${opts.to} no enviado (CORREO_DESTINO vacío).`);
-    return;
-  }
+  const destino = CONFIG.PRUEBA.CORREO_DESTINO || opts.to;
   MailApp.sendEmail({
-    to: CONFIG.PRUEBA.CORREO_DESTINO,
-    subject: `[PRUEBA] ${opts.subject} (KAM: ${opts.to})`,
+    to: destino,
+    subject: `[PRUEBA] ${opts.subject}`,
     htmlBody: opts.htmlBody
   });
 }

@@ -34,6 +34,10 @@ function preAnalizarCEN() {
 
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+
+    // Un análisis nuevo borra las provisionales que dejó una sesión anterior (p. ej. si se recargó la página)
+    cen_conBloqueo_(() => cen_borrarProvisionales_(shConsolidado, null));
+
     const pedidosProcesados = new Set();
     
     if (shConsolidado && shConsolidado.getLastRow() >= 2) {
@@ -382,210 +386,350 @@ function cen_getCatalogoProductosGlobal_(shProd) {
 }
 
 /**
- * Genera el CSV SAP unificado, lo guarda en Drive, registra las órdenes en CONSOLIDADO,
- * traslada los Excel terminados y notifica a cada KAM, en ese orden: si falla el CSV no se
- * registra nada, y los correos solo salen cuando todo quedó guardado.
+ * =========================================================================================
+ * REGISTRO PROVISIONAL DE CEN
+ * -----------------------------------------------------------------------------------------
+ * Cada cliente CEN, al pulsar "Guardar ... y pasar al siguiente", se registra en CONSOLIDADO
+ * como PROVISIONAL: su columna "Observaciones" lleva la marca "PROVISIONAL|<sesión>".
+ * - Así, el siguiente cliente con las mismas iniciales continúa el consecutivo.
+ * - Las filas solo quedan definitivas (se quita la marca) cuando se genera el CSV unificado.
+ * - Si el CSV no se genera, o al empezar un análisis CEN nuevo (por ejemplo tras recargar
+ *   la página), las provisionales se borran de CONSOLIDADO.
+ * =========================================================================================
+ */
+
+const CEN_PROVISIONAL = "PROVISIONAL";
+
+/**
+ * Texto que se escribe en "Observaciones" para una orden provisional de una sesión.
+ * @param {String} sessionId Identificador de la sesión del asistente.
+ * @return {String} Por ejemplo "PROVISIONAL|cen-lx2k3-ab12cd".
+ */
+function cen_marcaProvisional_(sessionId) {
+  return `${CEN_PROVISIONAL}|${sessionId}`;
+}
+
+/**
+ * ¿La celda de Observaciones contiene una marca provisional?
+ * @param {*} valor Contenido de la celda.
+ * @param {String} [sessionId] Si se indica, solo cuenta la marca de esa sesión.
+ * @return {Boolean}
+ */
+function cen_esProvisional_(valor, sessionId) {
+  const texto = String(valor || "");
+  return sessionId ? texto === cen_marcaProvisional_(sessionId) : texto.indexOf(CEN_PROVISIONAL + "|") === 0;
+}
+
+/**
+ * Número de columna (base 0) de "Observaciones" en CONSOLIDADO, leído de la fila de encabezados (fila 3).
+ * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
+ * @return {Number}
+ */
+function cen_colObservaciones_(sh) {
+  const col = medipiel_getHeaderMap_(sh, 3)[medipiel_normalizeKey_("Observaciones")];
+  return col ? col - 1 : CONSOLIDADO_HEADERS.indexOf("Observaciones");
+}
+
+/**
+ * Ejecuta una función con el bloqueo de Apps Script, para que dos clics o dos usuarios no
+ * escriban en CONSOLIDADO a la vez (dos consecutivos iguales).
+ * @param {Function} fn Función a ejecutar.
+ * @return {*} Lo que devuelve fn.
+ */
+function cen_conBloqueo_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Filas provisionales de una sesión (o de todas las sesiones si no se indica).
+ * Las filas de CONSOLIDADO empiezan en la 4 (la 3 son los encabezados).
+ * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
+ * @param {String} [sessionId]
+ * @return {Array<{fila: Number, oc: String, sap: String, combo: String}>}
+ *   fila: número de fila en la hoja (base 1). combo: "<OC>_<SAP normalizado>", igual que Combo_Key.
+ */
+function cen_listarProvisionales_(sh, sessionId) {
+  const ultima = sh.getLastRow();
+  if (ultima < 4) return [];
+  const colObs = cen_colObservaciones_(sh);
+  const valores = sh.getRange(4, 1, ultima - 3, sh.getLastColumn()).getValues();
+  const resultado = [];
+  valores.forEach((fila, i) => {
+    if (!cen_esProvisional_(fila[colObs], sessionId)) return;
+    const oc = cen_limpiarOc_(fila[1]);
+    const sap = cen_normalizeKey_(fila[2]);
+    resultado.push({ fila: i + 4, oc: oc, sap: sap, combo: `${oc}_${sap}` });
+  });
+  return resultado;
+}
+
+/**
+ * Borra de CONSOLIDADO las filas provisionales de una sesión (o de todas si no se indica).
+ * Se borra de abajo hacia arriba para que los números de fila no cambien mientras se borra.
+ * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
+ * @param {String} [sessionId]
+ * @return {Number} Cantidad de filas borradas.
+ */
+function cen_borrarProvisionales_(sh, sessionId) {
+  if (!sh) return 0;
+  const provisionales = cen_listarProvisionales_(sh, sessionId);
+  for (let i = provisionales.length - 1; i >= 0; i--) {
+    sh.deleteRow(provisionales[i].fila);
+  }
+  if (provisionales.length > 0) SpreadsheetApp.flush();
+  return provisionales.length;
+}
+
+/**
+ * Registra como PROVISIONALES las órdenes de UN cliente CEN. Lo llama el asistente al pulsar
+ * "Guardar ... y pasar al siguiente cliente" (o al último cliente, antes de generar el CSV).
+ * El consecutivo se calcula leyendo CONSOLIDADO dentro de un bloqueo, así que cuenta también las
+ * provisionales de los clientes anteriores de la misma sesión.
+ *
+ * @param {String} sessionId Identificador de la sesión del asistente.
+ * @param {Object} conf Datos del cliente: { pedidos, items, fechasEntregas }.
+ *   - pedidos: pedidos de ese cliente (con Pedido_ID, Cliente_Key, Solicitante_SAP, Id_Destino...).
+ *   - items: posiciones de esos pedidos (con Cant y Valor_Unitario).
+ *   - fechasEntregas: { <Pedido_ID>: { fecha: "yyyy-MM-dd" } }.
+ * @return {Object} { ids: [{ Id, Pedido_ID, Solicitante_SAP }] } consecutivos asignados.
+ */
+function cenGuardarProvisional(sessionId, conf) {
+  return cen_conBloqueo_(() => {
+    if (!sessionId) throw new Error("Falta el identificador de sesión CEN.");
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+    if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
+
+    const sufijoAno = String(new Date().getFullYear()).slice(-2);
+    const numCols = Math.max(sh.getLastColumn(), CONSOLIDADO_HEADERS.length);
+    const headerMap = medipiel_getHeaderMap_(sh, 3);
+    const maxPorPrefijo = {};
+    const filas = [];
+    const ids = [];
+
+    conf.pedidos.forEach(p => {
+      const kamInfo = cen_getKamInfo_(p.Solicitante_SAP, p.Cliente_Nombre);
+      const prefix = (kamInfo.initials || "MC") + "-" + sufijoAno;
+      // Se lee CONSOLIDADO una vez por prefijo; después se cuenta en memoria
+      if (maxPorPrefijo[prefix] === undefined) maxPorPrefijo[prefix] = cen_obtenerMaxConsecutivo_(sh, prefix);
+
+      let totalUnidades = 0;
+      let totalValor = 0;
+      conf.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key).forEach(item => {
+        const cant = parseInt(item.Cant) || 0;
+        totalUnidades += cant;
+        totalValor += cant * (parseFloat(item.Valor_Unitario) || 0);
+      });
+      if (totalUnidades === 0) return;
+
+      maxPorPrefijo[prefix]++;
+      const id = prefix + String(maxPorPrefijo[prefix]).padStart(4, "0");
+      const fechaEntrega = conf.fechasEntregas[p.Pedido_ID] ? conf.fechasEntregas[p.Pedido_ID].fecha : "";
+
+      filas.push(medipiel_createRowArray_(headerMap, {
+        "Id": id,
+        "Orden De Compra": p.Pedido_ID,
+        "Sap Id": p.Solicitante_SAP,
+        "Solicitante": p.Cliente_Nombre,
+        "Fecha Pedido": p.Fecha_Pedido,
+        "Id Destino": p.Id_Destino,
+        "Destinatario": p.Destinatario,
+        "Ciudad": p.Ciudad,
+        "Fecha entrega": fechaEntrega,
+        "Unidades": totalUnidades,
+        "Valor": totalValor,
+        "Observaciones": cen_marcaProvisional_(sessionId),
+        "KAM": "" // DEJAR VACÍO: para que actúe la fórmula nativa de Google Sheets
+      }, numCols));
+      ids.push({ Id: id, Pedido_ID: p.Pedido_ID, Solicitante_SAP: p.Solicitante_SAP });
+    });
+
+    if (filas.length > 0) {
+      sh.getRange(sh.getLastRow() + 1, 1, filas.length, numCols).setValues(filas);
+      SpreadsheetApp.flush();
+    }
+    return { ids: ids };
+  });
+}
+
+/**
+ * Genera el CSV SAP unificado de todos los clientes de la sesión y confirma sus órdenes provisionales.
+ * Orden de los pasos:
+ *   1. CSV en Drive. Si falla, se borran las provisionales y no queda nada registrado.
+ *   2. Las provisionales de la sesión pasan a definitivas (se quita la marca).
+ *   3. Se mueven los Excel terminados a Procesados.
+ *   4. Se envían los correos a las KAM, solo por las órdenes definitivas.
+ *
+ * @param {Object} paquete Incluye sessionId, pedidos, items, fechasEntregas, materialesSeleccionados,
+ *   noActualizadosSeleccionados, backordersSeleccionados, estadoArchivos y notificarKAM.
+ * @return {Object} { success, mensaje, csvData, fileName }
  */
 function guardarDefinitivoCEN(paquete) {
   try {
-    const configCli = CONFIG.CLIENTES["CEN"];
-    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+    return cen_conBloqueo_(() => {
+      if (!paquete.sessionId) throw new Error("Falta el identificador de sesión CEN.");
+      const configCli = CONFIG.CLIENTES["CEN"];
+      const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+      const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+      if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
-    if (!shConsolidado) throw new Error("No se encontró la hoja CONSOLIDADO.");
+      const pedidosCsv = [];
+      const notificaciones = [];
+      const combosPaquete = new Set();
 
-    const currentYearSuffix = String(new Date().getFullYear()).slice(-2);
+      // Líneas del CSV por cliente y orden. Las órdenes sin unidades no se registran.
+      const pedidosPorCliente = {};
+      paquete.pedidos.forEach(p => {
+        if (!pedidosPorCliente[p.Cliente_Key]) pedidosPorCliente[p.Cliente_Key] = [];
+        pedidosPorCliente[p.Cliente_Key].push(p);
+      });
 
-    const filasConsolidado = [];
-    const pedidosCsv = [];
-    const combosRegistrados = new Set();
-    const notificaciones = [];
+      for (const cliKey in pedidosPorCliente) {
+        const pedidosCli = pedidosPorCliente[cliKey];
+        const primerPedido = pedidosCli[0];
+        const solicitanteSap = primerPedido.Solicitante_SAP;
+        const kamInfo = cen_getKamInfo_(solicitanteSap, primerPedido.Cliente_Nombre);
 
-    const pedidosPorCliente = {};
-    paquete.pedidos.forEach(p => {
-      if (!pedidosPorCliente[p.Cliente_Key]) pedidosPorCliente[p.Cliente_Key] = [];
-      pedidosPorCliente[p.Cliente_Key].push(p);
-    });
+        pedidosCli.forEach(p => {
+          // Por OC y cliente: dos clientes pueden traer el mismo número de OC en el mismo lote
+          const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key);
+          let totalUnidades = 0;
 
-    for (const cliKey in pedidosPorCliente) {
-      const pedidosCli = pedidosPorCliente[cliKey];
-      const primerPedido = pedidosCli[0];
-      const solicitanteSap = primerPedido.Solicitante_SAP;
+          const pedidoCsv = {
+            sap: configCli.SAP,
+            solicitante: solicitanteSap,
+            destinatario: p.Id_Destino,
+            numPedidoCliente: p.Pedido_ID,
+            fechaEntrega: paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
+            lineas: []
+          };
+          pedidosCsv.push(pedidoCsv);
 
-      // Consumo con doble capa de resolución (main.gs o búsqueda directa en hoja)
-      const kamInfo = cen_getKamInfo_(solicitanteSap, primerPedido.Cliente_Nombre);
-      const prefix = (kamInfo.initials || "MC") + "-" + currentYearSuffix;
+          itemsPedido.forEach(item => {
+            const matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
+            // Sin Material SAP (vacío, SIN_ o EAN de 13 dígitos): la línea va al CSV con material vacío => back order en SAP
+            const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) ||
+                                    (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
+            const cant = parseInt(item.Cant) || 0;
+            totalUnidades += cant;
+            pedidoCsv.lineas.push({ material: isNoActualizado ? "" : matSeleccionado, cantidad: cant });
+          });
 
-      let maxConsecutive = cen_obtenerMaxConsecutivo_(shConsolidado, prefix);
-
-      pedidosCli.forEach(p => {
-        // Por OC y cliente: dos clientes pueden traer el mismo número de OC en el mismo lote
-        const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key);
-        let totalUnidades = 0;
-        let totalValor = 0;
-
-        const pedidoCsv = {
-          sap: configCli.SAP,
-          solicitante: solicitanteSap,
-          destinatario: p.Id_Destino,
-          numPedidoCliente: p.Pedido_ID,
-          fechaEntrega: paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
-          lineas: []
-        };
-        pedidosCsv.push(pedidoCsv);
-
-        itemsPedido.forEach(item => {
-          let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
-          
-          // Validación flexible: Admite códigos SAP de 12 dígitos, descarta cadenas vacías, SIN_ y EANs de 13 dígitos
-          const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
-                                  (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
-
-          let matCsv = isNoActualizado ? "" : matSeleccionado;
-
-          const cant = parseInt(item.Cant) || 0;
-          const valUnit = parseFloat(item.Valor_Unitario) || 0;
-          totalUnidades += cant;
-          totalValor += (cant * valUnit);
-
-          pedidoCsv.lineas.push({ material: matCsv, cantidad: cant });
+          if (totalUnidades > 0) combosPaquete.add(p.Combo_Key);
         });
 
-        if (totalUnidades > 0) {
-          maxConsecutive++;
-          const consecutivoStr = String(maxConsecutive).padStart(4, "0");
-          const idGenerado = prefix + consecutivoStr;
-          combosRegistrados.add(p.Combo_Key);
+        notificaciones.push({ pedidosCli: pedidosCli, kamInfo: kamInfo, clienteNombre: primerPedido.Cliente_Nombre, solicitanteSap: solicitanteSap });
+      }
 
-          filasConsolidado.push([
-            idGenerado,
-            p.Pedido_ID,
-            solicitanteSap,
-            p.Cliente_Nombre,
-            p.Fecha_Pedido,
-            p.Id_Destino,
-            p.Destinatario,
-            p.Ciudad,
-            paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
-            totalUnidades,
-            totalValor,
-            "", "",
-            "" // DEJAR VACÍO: Para que actúe la fórmula nativa de Google Sheets
-          ]);
-        }
-      });
+      // Filas provisionales de esta sesión: se confirman las que siguen en el paquete; el resto se borra.
+      const provisionales = cen_listarProvisionales_(sh, paquete.sessionId);
+      const aConfirmar = provisionales.filter(r => combosPaquete.has(r.combo));
+      if (aConfirmar.length === 0) {
+        throw new Error("No hay órdenes provisionales de esta sesión para confirmar. Vuelva a registrar los clientes.");
+      }
+      const combosRegistrados = new Set(aConfirmar.map(r => r.combo));
 
-      // El correo se envía al final, cuando el CSV y CONSOLIDADO ya quedaron guardados
-      notificaciones.push({ pedidosCli: pedidosCli, kamInfo: kamInfo, clienteNombre: primerPedido.Cliente_Nombre, solicitanteSap: solicitanteSap });
-    }
+      // 1. CSV primero: si no se puede guardar, no queda nada registrado.
+      const csvContent = construirCsvSap_(pedidosCsv);
+      const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
+      const fileName = nombreArchivoSap_(`Pedido_CEN_${fechaProceso}.csv`);
+      let archivoCsv = null;
+      try {
+        archivoCsv = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID).createFile(fileName, csvContent, MimeType.PLAIN_TEXT);
+      } catch (eCsv) {
+        cen_borrarProvisionales_(sh, paquete.sessionId);
+        throw new Error("No se pudo guardar el CSV en Drive; las órdenes provisionales se borraron de CONSOLIDADO: " + eCsv.message);
+      }
 
-    if (filasConsolidado.length === 0) {
-      throw new Error("No hay órdenes con unidades para registrar.");
-    }
+      // 2. Confirmar: se quita la marca de las filas de esta sesión y se borran las que sobran.
+      try {
+        const colObs = cen_colObservaciones_(sh) + 1;
+        aConfirmar.forEach(r => sh.getRange(r.fila, colObs).setValue(""));
+        SpreadsheetApp.flush();
+        cen_borrarProvisionales_(sh, paquete.sessionId);
+      } catch (errSheets) {
+        try { archivoCsv.setTrashed(true); } catch (ignore) {}
+        cen_borrarProvisionales_(sh, paquete.sessionId);
+        throw new Error("Fallo al confirmar en CONSOLIDADO; el CSV se envió a la papelera y las provisionales se borraron: " + errSheets.message);
+      }
 
-    // 1. CSV primero: si no se puede guardar, no se registra nada en CONSOLIDADO.
-    const csvContent = construirCsvSap_(pedidosCsv);
+      // 3. Traslado de los Excel. Un Excel CEN trae OCs de varios clientes: solo se mueve si TODAS
+      //    sus OCs quedaron registradas y no tiene compradores sin homologar.
+      const archivosRetenidos = [];
+      if (configCli.PROCESSED_FOLDER_ID) {
+        const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
+        const estadoArchivos = paquete.estadoArchivos || {};
+        const archivosProcesadosMap = {};
 
-    const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
-    const fileName = nombreArchivoSap_(`Pedido_CEN_${fechaProceso}.csv`);
-    let archivoCsv = null;
+        paquete.pedidos.forEach(p => {
+          if (p.Archivo_Id && !archivosProcesadosMap[p.Archivo_Id]) {
+            archivosProcesadosMap[p.Archivo_Id] = {
+              nombreOriginal: p.Archivo_Nombre || p.Archivo_Id,
+              clienteNombre: p.Cliente_Nombre || "CLIENTE_CEN",
+              fechaPedido: p.Fecha_Pedido || Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")
+            };
+          }
+        });
 
-    try {
-      const folderCSV = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID);
-      archivoCsv = folderCSV.createFile(fileName, csvContent, MimeType.PLAIN_TEXT);
-    } catch (eCsv) {
-      throw new Error("No se pudo guardar el CSV en Drive (no se registró nada en CONSOLIDADO): " + eCsv.message);
-    }
+        for (const fileId in archivosProcesadosMap) {
+          const estado = estadoArchivos[fileId];
+          const completo = estado && !estado.bloqueado && estado.ocsPendientes.every(k => combosRegistrados.has(k));
+          if (!completo) {
+            archivosRetenidos.push(archivosProcesadosMap[fileId].nombreOriginal);
+            continue;
+          }
+          try {
+            const file = DriveApp.getFileById(fileId);
+            file.moveTo(folderDestino);
 
-    // 2. CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.
-    try {
-      const lastRow = shConsolidado.getLastRow();
-      shConsolidado.getRange(lastRow + 1, 1, filasConsolidado.length, filasConsolidado[0].length).setValues(filasConsolidado);
-      SpreadsheetApp.flush();
-    } catch (errSheets) {
-      try { archivoCsv.setTrashed(true); } catch (ignore) {}
-      throw new Error("Fallo al escribir en CONSOLIDADO; el CSV se envió a la papelera: " + errSheets.message);
-    }
-
-    // 3. Traslado de los Excel. Un Excel CEN trae OCs de varios clientes: solo se mueve si TODAS
-    //    sus OCs nuevas quedaron registradas y no tiene compradores sin homologar. Si no, se queda
-    //    en la carpeta de entrada y el próximo análisis mostrará solo lo que falta.
-    const archivosRetenidos = [];
-    if (configCli.PROCESSED_FOLDER_ID) {
-      const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
-      const estadoArchivos = paquete.estadoArchivos || {};
-      const archivosProcesadosMap = {};
-
-      paquete.pedidos.forEach(p => {
-        if (p.Archivo_Id && !archivosProcesadosMap[p.Archivo_Id]) {
-          archivosProcesadosMap[p.Archivo_Id] = {
-            nombreOriginal: p.Archivo_Nombre || p.Archivo_Id,
-            clienteNombre: p.Cliente_Nombre || "CLIENTE_CEN",
-            fechaPedido: p.Fecha_Pedido || Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")
-          };
-        }
-      });
-
-      for (const fileId in archivosProcesadosMap) {
-        const estado = estadoArchivos[fileId];
-        const completo = estado && !estado.bloqueado && estado.ocsPendientes.every(k => combosRegistrados.has(k));
-        if (!completo) {
-          archivosRetenidos.push(archivosProcesadosMap[fileId].nombreOriginal);
-          continue;
-        }
-
-        try {
-          const file = DriveApp.getFileById(fileId);
-          file.moveTo(folderDestino);
-
-          const info = archivosProcesadosMap[fileId];
-          const nameClean = info.clienteNombre.replace(/[^a-zA-Z0-9_ -]/g, "").trim();
-          const fechaClean = info.fechaPedido.replace(/[\/]/g, "-");
-          
-          const originalName = file.getName();
-          const extIdx = originalName.lastIndexOf(".");
-          const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsx";
-
-          const nuevoNombre = nombreArchivoSap_(`${nameClean}_CEN_${fechaClean}${ext}`);
-          file.setName(nuevoNombre);
-        } catch (eMove) {
-          console.error("Error trasladando archivo CEN procesado: " + eMove.message);
+            const info = archivosProcesadosMap[fileId];
+            const nameClean = info.clienteNombre.replace(/[^a-zA-Z0-9_ -]/g, "").trim();
+            const fechaClean = info.fechaPedido.replace(/[\/]/g, "-");
+            const originalName = file.getName();
+            const extIdx = originalName.lastIndexOf(".");
+            const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsx";
+            file.setName(nombreArchivoSap_(`${nameClean}_CEN_${fechaClean}${ext}`));
+          } catch (eMove) {
+            console.error("Error trasladando archivo CEN procesado: " + eMove.message);
+          }
         }
       }
-    }
 
-    // 4. Correos a las KAM, solo por las órdenes que quedaron registradas
-    if (paquete.notificarKAM !== false) {
-      notificaciones.forEach(n => {
-        const pedidosRegistradosCli = n.pedidosCli.filter(p => combosRegistrados.has(p.Combo_Key));
-        if (pedidosRegistradosCli.length === 0) return;
-        if (n.kamInfo.email && n.kamInfo.email.includes("@")) {
-          try {
-            cen_enviarCorreoKam_(pedidosRegistradosCli, paquete, n.kamInfo, n.clienteNombre);
-            console.log(`Correo enviado con éxito a ${n.kamInfo.name} (${n.kamInfo.email}) para cliente ${n.clienteNombre}`);
-          } catch (eMailErr) {
-            console.error(`Error enviando correo a ${n.kamInfo.email}: ${eMailErr.message}`);
+      // 4. Correos a las KAM, solo por las órdenes confirmadas
+      if (paquete.notificarKAM !== false) {
+        notificaciones.forEach(n => {
+          const pedidosRegistradosCli = n.pedidosCli.filter(p => combosRegistrados.has(p.Combo_Key));
+          if (pedidosRegistradosCli.length === 0) return;
+          if (n.kamInfo.email && n.kamInfo.email.includes("@")) {
+            try {
+              cen_enviarCorreoKam_(pedidosRegistradosCli, paquete, n.kamInfo, n.clienteNombre);
+            } catch (eMailErr) {
+              console.error(`Error enviando correo a ${n.kamInfo.email}: ${eMailErr.message}`);
+            }
+          } else {
+            console.warn(`No se envió notificación de ${n.clienteNombre}: no hay correo para el Solicitante SAP ${n.solicitanteSap} en Asignacion_KAM.`);
           }
-        } else {
-          console.warn(`No se envió notificación de ${n.clienteNombre} porque no se encontró un correo registrado para el Solicitante SAP ${n.solicitanteSap} en Asignacion_KAM.`);
-        }
-      });
-    }
+        });
+      }
 
-    const base64Limpio = Utilities.base64Encode(csvContent, Utilities.Charset.UTF_8).replace(/[\r\n]/g, "");
+      let mensaje = `Se confirmaron ${aConfirmar.length} órdenes de compra de CEN.`;
+      if (archivosRetenidos.length > 0) {
+        mensaje += ` ${archivosRetenidos.length} archivo(s) se dejaron en la carpeta de entrada porque aún tienen órdenes sin registrar: ${archivosRetenidos.join(", ")}.`;
+      }
 
-    let mensaje = `Se han procesado exitosamente ${filasConsolidado.length} órdenes de compra de CEN.`;
-    if (archivosRetenidos.length > 0) {
-      mensaje += ` ${archivosRetenidos.length} archivo(s) se dejaron en la carpeta de entrada porque aún tienen órdenes sin registrar: ${archivosRetenidos.join(", ")}.`;
-    }
-
-    return {
-      success: true,
-      mensaje: mensaje,
-      csvData: base64Limpio,
-      fileName: fileName
-    };
-
+      return {
+        success: true,
+        mensaje: mensaje,
+        csvData: Utilities.base64Encode(csvContent, Utilities.Charset.UTF_8).replace(/[\r\n]/g, ""),
+        fileName: fileName
+      };
+    });
   } catch (err) {
     throw new Error(err.message);
   }

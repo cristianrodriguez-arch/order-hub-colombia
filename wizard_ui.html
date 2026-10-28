@@ -236,6 +236,8 @@
       productosAgrupados: [],
       paquetesProcesados: [],
       clientesCenConfigurados: {},
+      // Identificador de esta sesión del asistente: cada recarga de la página inicia una sesión nueva
+      sessionCen: "cen-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
       catalogoMateriales: null,
       catalogoError: null
     };
@@ -878,6 +880,27 @@
       noActualizadosSeleccionados: noActualizadosSeleccionados
     };
 
+    // Registro PROVISIONAL en CONSOLIDADO. Así el siguiente cliente con las mismas iniciales continúa
+    // el consecutivo. Las filas solo quedan definitivas al generar el CSV unificado.
+    const cliConf = wizardState.clientesCenConfigurados[cliKey];
+    google.script.run
+      .withSuccessHandler((resp) => {
+        cliConf.provisional = resp;
+        wizardContinuarTrasGuardarClienteCen(cliKey, nombreCliActual);
+      })
+      .withFailureHandler((err) => {
+        // Si no se pudo registrar, el cliente no cuenta como listo
+        delete wizardState.clientesCenConfigurados[cliKey];
+        mostrarError(`No se pudo registrar ${nombreCliActual}: ${err.message}`);
+      })
+      .cenGuardarProvisional(wizardState.sessionCen, cliConf);
+  }
+
+  /**
+   * Continúa el flujo CEN después de registrar provisionalmente un cliente: pasa al siguiente
+   * cliente pendiente o, si no quedan, genera el CSV unificado.
+   */
+  function wizardContinuarTrasGuardarClienteCen(cliKey, nombreCliActual) {
     const otrosPendientes = wizardState.clientesCenPendientes.filter(c => !wizardState.clientesCenConfigurados[c.key] && c.key !== cliKey);
 
     if (otrosPendientes.length > 0) {
@@ -931,6 +954,8 @@
       backordersSeleccionados: todosBackorders,
       noActualizadosSeleccionados: todosNoActualizados,
       notificarKAM: notificarKAM,
+      // Sesión del asistente: el backend confirma solo las órdenes provisionales de esta sesión
+      sessionId: wizardState.sessionCen,
       // OCs que trae cada Excel: el backend solo lo mueve a Procesados si todas quedaron registradas
       estadoArchivos: wizardState.payloadRaw.estadoArchivos || {}
     };

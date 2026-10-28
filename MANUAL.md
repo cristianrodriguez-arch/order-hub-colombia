@@ -68,7 +68,24 @@ En `main.js` cada parte está marcada con comentarios. Busca las palabras **FORM
 4. **Antes de probar, revisa que estés en la rama `prueba`** (ver sección 6).
 5. **No crees un `.clasp.json` dentro de la carpeta `ORDER HUB`.** Si existe, `clasp` puede subir el
    código a producción por error.
-6. **En modo prueba los correos no llegan a las KAM.** Ver sección 7.
+6. **En modo prueba los correos van a la dirección de la KAM de la copia.** Revísala antes (sección 7).
+7. **En CEN, trabaja una persona a la vez.** Al iniciar un análisis CEN se borran las órdenes
+   provisionales de cualquier sesión que no se haya confirmado con el CSV.
+
+---
+
+## 4.1. Flujo CEN con registro provisional
+
+1. Al abrir CEN se analizan los Excel de la carpeta. Antes se borran las provisionales que
+   quedaron de una sesión anterior.
+2. Por cada cliente, al pulsar **"Guardar … y pasar al siguiente cliente"**, sus órdenes se
+   escriben en `CONSOLIDADO` con la marca **PROVISIONAL** en la columna *Observaciones*. Así el
+   siguiente cliente con las mismas iniciales continúa el consecutivo y no repite el número.
+3. Al pulsar **"Generar CSV SAP unificado"**: se guarda el CSV, se quita la marca a las órdenes
+   (quedan definitivas), se mueven los Excel terminados y se envían los correos.
+4. Si el CSV no se puede guardar, las provisionales se borran. Si se recarga la página antes de
+   generar el CSV, las provisionales se quedan en `CONSOLIDADO` hasta el siguiente análisis CEN,
+   que las borra. **Apps Script no puede borrarlas en el momento exacto de la recarga.**
 
 ---
 
@@ -163,13 +180,13 @@ Está en `main.js`, dentro de `CONFIG.PRUEBA`:
 |---|---|---|
 | `ACTIVO` | `true` | Activa el modo prueba. |
 | `PREFIJO_ARCHIVOS` | `PRUEBA_` | Los archivos procesados y los CSV empiezan con `PRUEBA_`. Así se distinguen de los reales. |
-| `CORREO_DESTINO` | vacío | Si está vacío **no se envía ningún correo**. Si pones un correo, todos los avisos van ahí con `[PRUEBA]` en el asunto. |
+| `CORREO_DESTINO` | vacío | Vacío: los correos van a la dirección de la KAM en `Asignacion_KAM` de la copia, con `[PRUEBA]` en el asunto. Si pones un correo, todos los avisos van ahí. |
 
 Los archivos con `PRUEBA_` quedan en la carpeta de **procesados** real (es la misma en
 producción y en prueba). **Bórralos a mano al terminar las pruebas.**
 
-Para ver los correos durante la prueba, cambia `CORREO_DESTINO` a tu correo **solo en tu
-copia local**, nunca lo subas al repositorio.
+Antes de probar, revisa en la hoja de prueba, pestaña `Asignacion_KAM`, que **todos** los correos
+sean tuyos. Si alguno no lo es, ese aviso llegaría a otra persona.
 
 ---
 
@@ -197,6 +214,13 @@ En el asistente de MEDIPIEL, con un producto que tenga stock:
 - [ ] Un material que **existe** (por ejemplo `690033678`) se acepta y muestra su stock real.
 - [ ] Un material que **no existe** (por ejemplo `999999999`) se bloquea en rojo.
 - [ ] La **sección 3** (back order) también tiene desplegable.
+
+### Prueba D — Consecutivos de CEN con las mismas iniciales
+Con dos clientes CEN de las mismas iniciales en el mismo Excel (en la copia, Cafam y Comfandi):
+- [ ] Al guardar el primero, en CONSOLIDADO aparece su fila con la marca `PROVISIONAL` en *Observaciones*.
+- [ ] El segundo cliente recibe el consecutivo siguiente, sin repetir el número.
+- [ ] Al generar el CSV unificado, la columna *Observaciones* queda vacía en esas filas.
+- [ ] Si recargas la página antes del CSV, al volver a abrir CEN las filas provisionales desaparecen.
 
 ### Prueba C — Renombrado y registro
 - [ ] En **CONSOLIDADO** de la hoja de prueba aparecen las filas nuevas.
@@ -229,6 +253,7 @@ y guárdalo en este manual en la sección 10 para revisarlo después.
 |---|---|---|
 | 2026-10-28 | `clasp create` respondió "Project file already exists". Había un `.clasp.json` en la carpeta padre `ORDER HUB` apuntando a **producción**. | Se creó la carpeta `PRUEBA_ORDER_HUB` fuera de `ORDER HUB`. Producción no se modificó (comprobado: su ID de hoja sigue igual). |
 | 2026-10-28 | Al leer la carpeta CEN de prueba: "Drive is not defined". | Falta activar el servicio avanzado Drive API v2 en el proyecto de prueba (ver tabla de problemas frecuentes). |
+| 2026-10-28 | Dos clientes CEN con las mismas iniciales en el mismo Excel recibieron el mismo consecutivo (`AMS-260001` repetido). | Se registra cada cliente como provisional al guardarlo y el siguiente cliente continúa el número. Ver sección 4.1. |
 
 ---
 
