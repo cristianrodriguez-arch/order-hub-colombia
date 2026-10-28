@@ -866,23 +866,11 @@ function guardarDefinitivoCMX(paquete) {
     const fileName = nombreArchivoSap_(`Pedido_${idsGenerados[0]}.csv`);
     let archivoCsv = null;
 
+    // Igual que CEN y MEDIPIEL: el CSV va a CONFIG.FOLDER_CSV_ID
     try {
-      let csvFolder = null;
-      const parentFolder = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
-      const subFolders = parentFolder.getFoldersByName("CSV");
-      if (subFolders.hasNext()) {
-        csvFolder = subFolders.next();
-      } else {
-        csvFolder = parentFolder.createFolder("CSV");
-      }
-      archivoCsv = csvFolder.createFile(fileName, csvData, MimeType.PLAIN_TEXT);
+      archivoCsv = DriveApp.getFolderById(CONFIG.FOLDER_CSV_ID).createFile(fileName, csvData, MimeType.PLAIN_TEXT);
     } catch (csvDriveErr) {
-      try {
-        const parentFolder = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
-        archivoCsv = parentFolder.createFile(fileName, csvData, MimeType.PLAIN_TEXT);
-      } catch (e) {
-        throw new Error("No se pudo guardar el CSV en Drive (no se registró nada en CONSOLIDADO): " + e.message);
-      }
+      throw new Error("No se pudo guardar el CSV en Drive (no se registró nada en CONSOLIDADO): " + csvDriveErr.message);
     }
 
     // 2. Escribir CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.

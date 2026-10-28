@@ -583,8 +583,15 @@
 
   /** Lote que se propone por defecto: el primero con stock suficiente o, si no hay, el primero. */
   function wizardIndiceMejorMaterial(grp) {
+    // 1. El primer lote que cubre la cantidad completa
     const idx = grp.Materiales_Disponibles.findIndex(m => m.stock >= grp.CantTotal);
-    return idx === -1 ? 0 : idx;
+    if (idx !== -1) return idx;
+    // 2. Ningún lote la cubre: se propone el de mayor stock, para que el back order sea el menor posible
+    let mejor = 0;
+    grp.Materiales_Disponibles.forEach((m, i) => {
+      if ((Number(m.stock) || 0) > (Number(grp.Materiales_Disponibles[mejor].stock) || 0)) mejor = i;
+    });
+    return mejor;
   }
 
   /**
