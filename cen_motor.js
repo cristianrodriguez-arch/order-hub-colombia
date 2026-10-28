@@ -390,7 +390,7 @@ function cen_getCatalogoProductosGlobal_(shProd) {
  * REGISTRO PROVISIONAL DE CEN
  * -----------------------------------------------------------------------------------------
  * Cada cliente CEN, al pulsar "Guardar ... y pasar al siguiente", se registra en CONSOLIDADO
- * como PROVISIONAL: su columna "Observaciones" lleva la marca "PROVISIONAL|<sesión>".
+ * como PROVISIONAL: su columna V lleva la marca "PROVISIONAL|<sesión>".
  * - Así, el siguiente cliente con las mismas iniciales continúa el consecutivo.
  * - Las filas solo quedan definitivas (se quita la marca) cuando se genera el CSV unificado.
  * - Si el CSV no se genera, o al empezar un análisis CEN nuevo (por ejemplo tras recargar
@@ -401,7 +401,7 @@ function cen_getCatalogoProductosGlobal_(shProd) {
 const CEN_PROVISIONAL = "PROVISIONAL";
 
 /**
- * Texto que se escribe en "Observaciones" para una orden provisional de una sesión.
+ * Texto que se escribe en la columna V para una orden provisional de una sesión.
  * @param {String} sessionId Identificador de la sesión del asistente.
  * @return {String} Por ejemplo "PROVISIONAL|cen-lx2k3-ab12cd".
  */
@@ -410,7 +410,7 @@ function cen_marcaProvisional_(sessionId) {
 }
 
 /**
- * ¿La celda de Observaciones contiene una marca provisional?
+ * ¿La celda de la columna V contiene una marca provisional?
  * @param {*} valor Contenido de la celda.
  * @param {String} [sessionId] Si se indica, solo cuenta la marca de esa sesión.
  * @return {Boolean}
@@ -421,14 +421,10 @@ function cen_esProvisional_(valor, sessionId) {
 }
 
 /**
- * Número de columna (base 0) de "Observaciones" en CONSOLIDADO, leído de la fila de encabezados (fila 3).
- * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
- * @return {Number}
+ * CEN_COL_MARCA: columna V de CONSOLIDADO (número base 1) donde va la marca PROVISIONAL.
+ * No es una columna con datos ni fórmulas del consolidado, así que no altera nada de lo que ya existe.
  */
-function cen_colObservaciones_(sh) {
-  const col = medipiel_getHeaderMap_(sh, 3)[medipiel_normalizeKey_("Observaciones")];
-  return col ? col - 1 : CONSOLIDADO_HEADERS.indexOf("Observaciones");
-}
+const CEN_COL_MARCA = 22;
 
 /**
  * Ejecuta una función con el bloqueo de Apps Script, para que dos clics o dos usuarios no
@@ -457,13 +453,13 @@ function cen_conBloqueo_(fn) {
 function cen_listarProvisionales_(sh, sessionId) {
   const ultima = sh.getLastRow();
   if (ultima < 4) return [];
-  const colObs = cen_colObservaciones_(sh);
-  const valores = sh.getRange(4, 1, ultima - 3, sh.getLastColumn()).getValues();
+  const marcas = sh.getRange(4, CEN_COL_MARCA, ultima - 3, 1).getValues();
+  const datos = sh.getRange(4, 1, ultima - 3, 3).getValues();
   const resultado = [];
-  valores.forEach((fila, i) => {
-    if (!cen_esProvisional_(fila[colObs], sessionId)) return;
-    const oc = cen_limpiarOc_(fila[1]);
-    const sap = cen_normalizeKey_(fila[2]);
+  marcas.forEach((marca, i) => {
+    if (!cen_esProvisional_(marca[0], sessionId)) return;
+    const oc = cen_limpiarOc_(datos[i][1]);
+    const sap = cen_normalizeKey_(datos[i][2]);
     resultado.push({ fila: i + 4, oc: oc, sap: sap, combo: `${oc}_${sap}` });
   });
   return resultado;
@@ -507,7 +503,8 @@ function cenGuardarProvisional(sessionId, conf) {
     if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
     const sufijoAno = String(new Date().getFullYear()).slice(-2);
-    const numCols = Math.max(sh.getLastColumn(), CONSOLIDADO_HEADERS.length);
+    // Solo se escriben las columnas A:N, como siempre. Las de la O en adelante tienen fórmulas.
+    const numCols = CONSOLIDADO_HEADERS.length;
     const headerMap = medipiel_getHeaderMap_(sh, 3);
     const maxPorPrefijo = {};
     const filas = [];
@@ -544,14 +541,16 @@ function cenGuardarProvisional(sessionId, conf) {
         "Fecha entrega": fechaEntrega,
         "Unidades": totalUnidades,
         "Valor": totalValor,
-        "Observaciones": cen_marcaProvisional_(sessionId),
         "KAM": "" // DEJAR VACÍO: para que actúe la fórmula nativa de Google Sheets
       }, numCols));
       ids.push({ Id: id, Pedido_ID: p.Pedido_ID, Solicitante_SAP: p.Solicitante_SAP });
     });
 
     if (filas.length > 0) {
-      sh.getRange(sh.getLastRow() + 1, 1, filas.length, numCols).setValues(filas);
+      const primera = sh.getLastRow() + 1;
+      sh.getRange(primera, 1, filas.length, numCols).setValues(filas);
+      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:N, no toca las fórmulas)
+      filas.forEach((_, i) => sh.getRange(primera + i, CEN_COL_MARCA).setValue(cen_marcaProvisional_(sessionId)));
       SpreadsheetApp.flush();
     }
     return { ids: ids };
@@ -649,8 +648,7 @@ function guardarDefinitivoCEN(paquete) {
 
       // 2. Confirmar: se quita la marca de las filas de esta sesión y se borran las que sobran.
       try {
-        const colObs = cen_colObservaciones_(sh) + 1;
-        aConfirmar.forEach(r => sh.getRange(r.fila, colObs).setValue(""));
+        aConfirmar.forEach(r => sh.getRange(r.fila, CEN_COL_MARCA).setValue(""));
         SpreadsheetApp.flush();
         cen_borrarProvisionales_(sh, paquete.sessionId);
       } catch (errSheets) {
