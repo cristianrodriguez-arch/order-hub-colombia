@@ -621,7 +621,8 @@ function obtenerCatalogoMaterialesSap() {
     mapaBodega[ean].forEach(lote => {
       if (!lote.material) return;
       if (!catalogo[lote.material]) catalogo[lote.material] = { stock: 0, descripcion: "" };
-      catalogo[lote.material].stock += Number(lote.stock) || 0;
+      // Stock de un material = el lote más grande que tiene (no la suma de lotes): la regla es un solo lote
+      catalogo[lote.material].stock = Math.max(catalogo[lote.material].stock, Number(lote.stock) || 0);
     });
   }
   return catalogo;

@@ -891,8 +891,9 @@
         return;
       }
 
-      const stockTotal = grp.Materiales_Disponibles.reduce((sum, m) => sum + (parseInt(m.stock) || 0), 0);
-      const isBackOrder = stockTotal < grp.CantTotal;
+      // Regla: basta UN lote que cubra la cantidad de todas las órdenes del producto. No se suman lotes.
+      // Es la misma regla que se usa al elegir y al guardar el lote, así la sección y el guardado coinciden.
+      const isBackOrder = !grp.Materiales_Disponibles.some(m => (Number(m.stock) || 0) >= grp.CantTotal);
 
       if (isBackOrder) {
         itemsMulti.push(grp);
