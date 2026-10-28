@@ -31,7 +31,7 @@ const CONSOLIDADO_HEADERS = [
 ];
 
 const CONFIG = {
-  SPREADSHEET_ID: "1L5bxc9IXtBNUxYG54rBTESC3vkBO5HXNxV2L7vz02u8",
+  SPREADSHEET_ID: "1TAFu_ThSTccBj7uZRU3KFGWFE3mauEvqJfVfyjwInGU",
   SHEET_PEDIDOS: "CONSOLIDADO",
   SHEET_PRODUCTOS: "Productos",
   SHEET_BODEGA: "Bodega", 
@@ -39,18 +39,18 @@ const CONFIG = {
   OCR_LANGUAGE: "es",
   TRASH_TEMP_OCR_DOC: true, 
   LIMIT_FILES: 0,
-  FOLDER_CSV_ID: "1NrHwmCYC866bej3MdUsqAWPnbSxRDs3d",
+  FOLDER_CSV_ID: "1aOk4DI5hEpNJwxI9JD0f-MrR6g7AWA6E",
   // Modo prueba: en producción va apagado. Con ACTIVO en true, los archivos y CSV procesados
   // llevan el PREFIJO_ARCHIVOS y los correos a las KAM se envían solo a CORREO_DESTINO (si está vacío, no se envían).
   PRUEBA: {
-    ACTIVO: false,
+    ACTIVO: true,
     PREFIJO_ARCHIVOS: "PRUEBA_",
     CORREO_DESTINO: ""
   },
 
   CLIENTES: {
     "MEDIPIEL": {
-      FOLDER_ID: "10k7ltzA6CclAY8z9wDhEACrGl5-3bGnx",
+      FOLDER_ID: "12gYDfn3yRixa92jYQ_T08FWZGLvr5kfc",
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       SOLICITANTE: "11026712",
       NOMBRE_CLIENTE: "MEDIPIEL S.A.S.",
@@ -64,7 +64,7 @@ const CONFIG = {
       }
     },
     "CMX": {
-      FOLDER_ID: "1JiT2US9uOHgILK-ekaxyQdzgpG4zHwpv",
+      FOLDER_ID: "1iNqZ-ni0PUAt_IqTpiJ0pTdEx2KwRZ_D",
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       SOLICITANTE: "11033482",
       NOMBRE_CLIENTE: "CMX S.A.S.",
@@ -78,7 +78,7 @@ const CONFIG = {
       }
     },
     "CEN": {
-      FOLDER_ID: "1hCjs2bI3YvvmcqIOh-NufG9CCh2Zx3RF", // ID real de la carpeta CEN_sin_procesar
+      FOLDER_ID: "1aG4LW-EDpF3jaIM6Q19EzEG_tQhEE4u7", // carpeta de prueba CEN_sin_procesar PRUEBAS
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       FILE_QUERY: "mimeType contains 'spreadsheet' or mimeType contains 'excel'",
       SAP: {
