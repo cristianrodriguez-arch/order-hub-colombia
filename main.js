@@ -40,7 +40,14 @@ const CONFIG = {
   TRASH_TEMP_OCR_DOC: true, 
   LIMIT_FILES: 0,
   FOLDER_CSV_ID: "1NrHwmCYC866bej3MdUsqAWPnbSxRDs3d",
-  
+  // Modo prueba: en producción va apagado. Con ACTIVO en true, los archivos y CSV procesados
+  // llevan el PREFIJO_ARCHIVOS y los correos a las KAM se envían solo a CORREO_DESTINO (si está vacío, no se envían).
+  PRUEBA: {
+    ACTIVO: false,
+    PREFIJO_ARCHIVOS: "PRUEBA_",
+    CORREO_DESTINO: ""
+  },
+
   CLIENTES: {
     "MEDIPIEL": {
       FOLDER_ID: "10k7ltzA6CclAY8z9wDhEACrGl5-3bGnx",
@@ -134,6 +141,35 @@ const CONFIG = {
     }
   }
 };
+
+/**
+ * Nombre de un archivo generado (PDF/Excel procesado o CSV). En modo prueba se antepone PREFIJO_ARCHIVOS.
+ */
+function nombreArchivoSap_(nombre) {
+  return (CONFIG.PRUEBA.ACTIVO ? CONFIG.PRUEBA.PREFIJO_ARCHIVOS : "") + nombre;
+}
+
+/**
+ * Envía el correo a la KAM. En modo prueba nunca va a la KAM: va a CORREO_DESTINO con el asunto marcado,
+ * y si CORREO_DESTINO está vacío no se envía nada.
+ *
+ * @param {Object} opts { to, subject, htmlBody }
+ */
+function enviarCorreoKam_(opts) {
+  if (!CONFIG.PRUEBA.ACTIVO) {
+    MailApp.sendEmail({ to: opts.to, subject: opts.subject, htmlBody: opts.htmlBody });
+    return;
+  }
+  if (!CONFIG.PRUEBA.CORREO_DESTINO) {
+    console.log(`PRUEBA: correo para ${opts.to} no enviado (CORREO_DESTINO vacío).`);
+    return;
+  }
+  MailApp.sendEmail({
+    to: CONFIG.PRUEBA.CORREO_DESTINO,
+    subject: `[PRUEBA] ${opts.subject} (KAM: ${opts.to})`,
+    htmlBody: opts.htmlBody
+  });
+}
 
 /**
  * FORMATO ÚNICO DEL CSV DE CARGA A SAP (para todos los clientes).

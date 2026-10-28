@@ -206,7 +206,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
       }
 
       if (p.Archivo_ID) {
-        mapaNombresArchivos[p.Archivo_ID] = `Pedido_${idGenerado}.pdf`;
+        mapaNombresArchivos[p.Archivo_ID] = nombreArchivoSap_(`Pedido_${idGenerado}.pdf`);
       }
 
       filasConsolidado.push(medipiel_createRowArray_(headerMapConsolidado, {
@@ -232,7 +232,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
      throw new Error("No hay productos válidos seleccionados. Proceso abortado.");
   }
 
-  let csvFileName = `Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`;
+  let csvFileName = nombreArchivoSap_(`Pedido_${primerConsecutivoGenerado || Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd_HHmm")}.csv`);
   const csvString = construirCsvSap_(pedidosCsv);
 
   // 6. Guardar el archivo CSV en Google Drive ANTES de CONSOLIDADO: si falla, la OC no queda
@@ -435,7 +435,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
         </div>
       `;
 
-      MailApp.sendEmail({
+      enviarCorreoKam_({
         to: correoKam,
         subject: `📦 Resumen Pedidos MEDIPIEL - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,
         htmlBody: correoHTML

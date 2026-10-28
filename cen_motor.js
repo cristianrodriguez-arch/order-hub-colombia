@@ -487,7 +487,7 @@ function guardarDefinitivoCEN(paquete) {
     const csvContent = construirCsvSap_(pedidosCsv);
 
     const fechaProceso = Utilities.formatDate(new Date(), "GMT-5", "yyyyMMdd");
-    const fileName = `Pedido_CEN_${fechaProceso}.csv`;
+    const fileName = nombreArchivoSap_(`Pedido_CEN_${fechaProceso}.csv`);
     let archivoCsv = null;
 
     try {
@@ -546,7 +546,7 @@ function guardarDefinitivoCEN(paquete) {
           const extIdx = originalName.lastIndexOf(".");
           const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsx";
 
-          const nuevoNombre = `${nameClean}_CEN_${fechaClean}${ext}`;
+          const nuevoNombre = nombreArchivoSap_(`${nameClean}_CEN_${fechaClean}${ext}`);
           file.setName(nuevoNombre);
         } catch (eMove) {
           console.error("Error trasladando archivo CEN procesado: " + eMove.message);
@@ -857,7 +857,7 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
     </div>
   `;
 
-  MailApp.sendEmail({
+  enviarCorreoKam_({
     to: kamInfo.email,
     subject: `📦 Resumen Pedidos CEN (${clienteNombre}) - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,
     htmlBody: htmlBody

@@ -866,7 +866,7 @@ function guardarDefinitivoCMX(paquete) {
 
     // 1. Guardar el CSV ANTES de CONSOLIDADO: si falla, la OC no queda marcada como procesada.
     const csvData = cmx_generarCsvSap_(paqueteRegistrado);
-    const fileName = `Pedido_${idsGenerados[0]}.csv`;
+    const fileName = nombreArchivoSap_(`Pedido_${idsGenerados[0]}.csv`);
     let archivoCsv = null;
 
     try {
@@ -909,7 +909,7 @@ function guardarDefinitivoCMX(paquete) {
           const originalName = file.getName();
           const extIdx = originalName.lastIndexOf(".");
           const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsm";
-          file.setName("Pedido_" + idPorPedido[p.Pedido_ID] + ext);
+          file.setName(nombreArchivoSap_("Pedido_" + idPorPedido[p.Pedido_ID] + ext));
         } catch (ignore) {}
       }
     });
@@ -1116,7 +1116,7 @@ function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
     </div>
   `;
 
-  MailApp.sendEmail({
+  enviarCorreoKam_({
     to: kamEmail,
     subject: `📦 Resumen Pedidos CMX - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,
     htmlBody: htmlBody
