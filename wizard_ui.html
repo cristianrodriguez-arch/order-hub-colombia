@@ -352,10 +352,71 @@
       wizardState.clientesCenConfigurados = {};
       wizardRenderSelectorClientesCen();
     } else {
-      wizardState.payloadActual = respuesta;
-      document.getElementById('wizard-flow-container').classList.remove('hidden');
-      wizardCheckEansFaltantes();
+      // CMX: las órdenes sin destino reconocido piden el ID de destino antes de seguir
+      const pendientes = wizardState.cliente === 'CMX' ? respuesta.pedidosExtraidos.filter(p => p.Destino_Pendiente) : [];
+      if (pendientes.length > 0) {
+        wizardResolverDestinosCmx(pendientes, () => wizardMostrarRevisionPrincipal(respuesta));
+        return;
+      }
+      wizardMostrarRevisionPrincipal(respuesta);
     }
+  }
+
+  function wizardMostrarRevisionPrincipal(respuesta) {
+    wizardState.payloadActual = respuesta;
+    document.getElementById('wizard-flow-container').classList.remove('hidden');
+    wizardCheckEansFaltantes();
+  }
+
+  /**
+   * Pide, orden por orden, el ID de destino de las órdenes de CMX que no se pudieron homologar.
+   * Con el ID se trae la ciudad real de Destinatarios. Si el usuario también copia la dirección
+   * de la OC, se guarda para que la próxima vez esa orden se reconozca sola.
+   * @param {Array} pendientes Órdenes con Destino_Pendiente.
+   * @param {Function} alTerminar Se llama cuando todas tienen destino.
+   */
+  function wizardResolverDestinosCmx(pendientes, alTerminar) {
+    if (pendientes.length === 0) return alTerminar();
+    const pedido = pendientes[0];
+    Swal.fire({
+      icon: 'warning',
+      title: 'Destino no homologado',
+      html: `
+        <p class="text-sm text-gray-600 mb-3">La orden <b>${pedido.Pedido_ID}</b> no coincide con ningún destino de CMX en Destinatarios.</p>
+        <input id="swal-destino-id" class="swal2-input" placeholder="ID de destino (Id_destino)">
+        <input id="swal-destino-texto" class="swal2-input" placeholder="Dirección de la OC (opcional, para recordarla)">`,
+      focusConfirm: false,
+      showCancelButton: true,
+      confirmButtonText: 'Validar destino',
+      cancelButtonText: 'Volver',
+      confirmButtonColor: '#2B2830',
+      preConfirm: () => {
+        const id = document.getElementById('swal-destino-id').value.trim();
+        if (!id) {
+          Swal.showValidationMessage('Escriba el ID de destino');
+          return false;
+        }
+        return { id: id, texto: document.getElementById('swal-destino-texto').value.trim() };
+      }
+    }).then(res => {
+      if (!res.isConfirmed) {
+        volverDashboard();
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(destino => {
+          pedido.Id_Destino = destino.idDestino;
+          pedido.Destinatario = destino.nombreDestino;
+          pedido.Ciudad = destino.ciudad;
+          pedido.Destino_Pendiente = false;
+          wizardResolverDestinosCmx(pendientes.slice(1), alTerminar);
+        })
+        .withFailureHandler(err => {
+          mostrarError(err.message);
+          wizardResolverDestinosCmx(pendientes, alTerminar);
+        })
+        .cmx_resolverDestinoPorId(res.value.id, res.value.texto);
+    });
   }
 
   function wizardRenderSelectorClientesCen() {

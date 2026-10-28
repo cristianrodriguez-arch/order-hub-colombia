@@ -89,6 +89,22 @@ En `main.js` cada parte está marcada con comentarios. Busca las palabras **FORM
 
 ---
 
+## 4.2. Destino de CMX
+
+La ciudad y el destino de una orden de CMX salen de la hoja **Destinatarios**. El programa decide así:
+
+1. Si el texto de la OC contiene el texto de la columna **Texto_OC** de un destino de CMX, usa ese destino.
+2. Si CMX tiene un solo destino en Destinatarios, usa ese.
+3. Si no, la orden queda **pendiente** y el asistente pide el **ID de destino** (columna `Id_destino`).
+   - Con el ID se trae la ciudad de Destinatarios.
+   - Si además se copia la dirección de la OC en el campo opcional, se guarda en **Texto_OC**, y la próxima OC con esa dirección se reconoce sola.
+
+Para agregar un destino: una fila nueva en Destinatarios con `Id_origen` = 11033482, el `Id_destino`, la
+ciudad y, en **Texto_OC**, el texto de la bodega tal como sale en la OC. Varias versiones del mismo
+texto se separan con ` | `.
+
+Nunca se asigna una ciudad por defecto. Si una orden queda pendiente, no se puede guardar hasta indicar el destino.
+
 ## 5. Herramientas que necesitas
 
 - **Git** y **Node.js** (ya instalados en el equipo).

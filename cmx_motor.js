@@ -180,9 +180,10 @@ function cmx_motorLecturaExcel(archivos, diccBodega, diccProductos, configCli, p
         Pedido_ID: ocTrim,
         Fecha_Pedido: cabecera.fechaPedido || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
         Fecha_Entrega: cabecera.fechaEntrega || "",
-        Id_Destino: cabecera.idDestino || configCli.SOLICITANTE,
-        Destinatario: cabecera.destinatario || configCli.NOMBRE_CLIENTE || "CMX S.A.S.",
-        Ciudad: cabecera.ciudad || "COTA",
+        Id_Destino: cabecera.idDestino || "",
+        Destinatario: cabecera.destinatario || "",
+        Ciudad: cabecera.ciudad || "",
+        Destino_Pendiente: !!cabecera.destinoPendiente,
         Archivo_Nombre: file.getName(),
         Archivo_Id: file.getId()
       });
@@ -247,9 +248,10 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
     ordenCompra: "",
     fechaPedido: "",
     fechaEntrega: "",
-    idDestino: configCli.SOLICITANTE || "11033482", 
-    destinatario: configCli.NOMBRE_CLIENTE || "CMX S.A.S.",
-    ciudad: "COTA"
+    idDestino: "",
+    destinatario: "",
+    ciudad: "",
+    destinoPendiente: false
   };
   
   let items = [];
@@ -268,42 +270,16 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
     }
   }
 
-  let normTexto = cmx_normalizeKey_(textoDireccion);
-  let ciudadMapeadaDestinatarios = "";
-  if (diccDestinatarios) {
-    for (const key in diccDestinatarios) {
-      let normKey = cmx_normalizeKey_(key);
-      if (normKey && normTexto.includes(normKey)) {
-        cabecera.idDestino = diccDestinatarios[key].idDestino;
-        cabecera.destinatario = diccDestinatarios[key].nombreDestino;
-        ciudadMapeadaDestinatarios = diccDestinatarios[key].ciudad;
-        break;
-      }
-    }
+  // 1b. DESTINO: se compara el texto de la OC con la columna Texto_OC de Destinatarios (solo destinos de CMX).
+  //     Si no coincide: con un solo destino se usa ese; con varios, la orden queda PENDIENTE y el asistente
+  //     pide el ID de destino. Nunca se asigna una ciudad por defecto.
+  const resDestino = cmx_resolverDestino_(textoDireccion, cmx_leerDestinosCliente_(configCli.SOLICITANTE));
+  cabecera.destinoPendiente = resDestino.estado === "pendiente";
+  if (resDestino.destino) {
+    cabecera.idDestino = resDestino.destino.idDestino;
+    cabecera.destinatario = resDestino.destino.nombreDestino;
+    cabecera.ciudad = resDestino.destino.ciudad;
   }
-  
-  let ciudadDetectada = "";
-  const shClientes = ss.getSheetByName("Clientes") || ss.getSheetByName("Listado clientes") || ss.getSheetByName("Listado_clientes") || ss.getSheetByName("Listado Clientes");
-  if (shClientes) {
-    const dataCli = shClientes.getDataRange().getValues();
-    const headCli = dataCli[0].map(h => cmx_normalizeKey_(h));
-    const colPob = headCli.findIndex(h => h.includes("POBLACION") || h.includes("CIUDAD") || h.includes("MUNICIPIO") || h.includes("PBL"));
-    if (colPob !== -1) {
-      let normB2 = cmx_normalizeKey_(textoDireccion);
-      for (let i = 1; i < dataCli.length; i++) {
-        let pobVal = String(dataCli[i][colPob]).trim().toUpperCase();
-        if (pobVal && pobVal.length > 3) {
-          let normPob = cmx_normalizeKey_(pobVal);
-          if (normB2.includes(normPob)) {
-            ciudadDetectada = pobVal;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  cabecera.ciudad = ciudadMapeadaDestinatarios || ciudadDetectada || cmx_getCiudadParaCliente_(cabecera.idDestino) || "COTA";
 
   // 2. Escanear fila por fila para ubicar cabecera e inicio de la tabla
   for (let r = 0; r < Math.min(data.length, 30); r++) {
@@ -749,6 +725,12 @@ function guardarDefinitivoCMX(paquete) {
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!shConsolidado) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
+    // No se guarda ninguna orden sin destino confirmado
+    const sinDestino = (paquete.pedidos || []).filter(p => p.Destino_Pendiente || !p.Id_Destino || !p.Ciudad);
+    if (sinDestino.length > 0) {
+      throw new Error("Hay órdenes sin destino confirmado: " + sinDestino.map(p => p.Pedido_ID).join(", ") + ". Indique el ID de destino antes de guardar.");
+    }
+
     // ESCUDO EN TIEMPO REAL: Re-verifica antes de escribir en CONSOLIDADO
     const dataConsCheck = shConsolidado.getDataRange().getValues();
     let colOcCheck = 1;
@@ -847,7 +829,7 @@ function guardarDefinitivoCMX(paquete) {
         p.Fecha_Pedido || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
         p.Id_Destino || "11033482", 
         p.Destinatario || "CMX S.A.S.",
-        p.Ciudad || "LA ESTRELLA",
+        p.Ciudad,
         fechaEnt,
         totalUnidades,
         totalValor
@@ -901,7 +883,7 @@ function guardarDefinitivoCMX(paquete) {
 
     if (paquete.notificarKAM) {
       try {
-        cmx_enviarNotificacionKam_(paqueteRegistrado, idsGenerados.join(", "), pedidosRegistrados[0].Ciudad || "LA ESTRELLA");
+        cmx_enviarNotificacionKam_(paqueteRegistrado, idsGenerados.join(", "), pedidosRegistrados[0].Ciudad);
       } catch (eMailError) {
         console.log("Fallo el envío del correo: " + eMailError.message);
       }
@@ -1106,4 +1088,119 @@ function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
     subject: `📦 Resumen Pedidos CMX - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,
     htmlBody: htmlBody
   });
+}
+
+/**
+ * =========================================================================================
+ * DESTINO DE CMX
+ * -----------------------------------------------------------------------------------------
+ * Destinatarios tiene una columna "Texto_OC" con la dirección de la bodega tal como sale en la OC.
+ * Si un destino tiene varias versiones del texto, se separan con " | ".
+ * El destino se decide así:
+ *   1. El texto de la OC contiene algún Texto_OC de un destino de CMX  -> ese destino.
+ *   2. CMX tiene un solo destino en Destinatarios                       -> ese destino.
+ *   3. Si no, la orden queda PENDIENTE: el asistente pide el ID de destino.
+ * Nunca se asigna una ciudad por defecto.
+ * =========================================================================================
+ */
+
+/**
+ * Posiciones (base 0) de las columnas que necesita el destino, leídas de los encabezados de Destinatarios.
+ * @param {Array} encabezados Primera fila de Destinatarios.
+ * @return {{origen: Number, id: Number, nombre: Number, ciudad: Number, texto: Number}} -1 si no existe.
+ */
+function cmx_colsDestinatarios_(encabezados) {
+  const h = encabezados.map(x => cmx_normalizeKey_(x));
+  return {
+    origen: h.indexOf(cmx_normalizeKey_("Id_origen")),
+    id: h.indexOf(cmx_normalizeKey_("Id_destino")),
+    nombre: h.indexOf(cmx_normalizeKey_("Nombre_destino")),
+    ciudad: h.indexOf(cmx_normalizeKey_("Ciudad")),
+    texto: h.indexOf(cmx_normalizeKey_("Texto_OC"))
+  };
+}
+
+/**
+ * Convierte la celda Texto_OC en una lista de textos (separados por " | ").
+ * @param {*} valor Contenido de la celda.
+ * @return {Array<String>}
+ */
+function cmx_separarTextosOC_(valor) {
+  return String(valor || "").split("|").map(t => t.trim()).filter(t => t);
+}
+
+/**
+ * Destinos de Destinatarios que pertenecen al cliente (Id_origen = solicitante).
+ * @param {String|Number} solicitante SAP ID del cliente (CMX: 11033482).
+ * @return {Array<{idDestino: String, nombreDestino: String, ciudad: String, textosOC: Array<String>, fila: Number}>}
+ *   fila: número de fila en la hoja (base 1).
+ */
+function cmx_leerDestinosCliente_(solicitante) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ss.getSheetByName(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
+  if (!sh) return [];
+  const data = sh.getDataRange().getValues();
+  const cols = cmx_colsDestinatarios_(data[0]);
+  if (cols.origen === -1 || cols.id === -1) return [];
+
+  const destinos = [];
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][cols.origen]).trim() !== String(solicitante).trim()) continue;
+    destinos.push({
+      idDestino: String(data[i][cols.id]).trim(),
+      nombreDestino: cols.nombre !== -1 ? String(data[i][cols.nombre]).trim() : "",
+      ciudad: cols.ciudad !== -1 ? String(data[i][cols.ciudad]).trim().toUpperCase() : "",
+      textosOC: cols.texto !== -1 ? cmx_separarTextosOC_(data[i][cols.texto]) : [],
+      fila: i + 1
+    });
+  }
+  return destinos;
+}
+
+/**
+ * Decide el destino de una OC de CMX (reglas 1, 2 y 3 del encabezado).
+ * @param {String} textoOC Texto de la cabecera de la OC (filas 1 a 12).
+ * @param {Array} destinos Resultado de cmx_leerDestinosCliente_.
+ * @return {{estado: String, destino: Object|null}} estado: "ok" o "pendiente".
+ */
+function cmx_resolverDestino_(textoOC, destinos) {
+  const textoNorm = cmx_normalizeKey_(textoOC);
+  const coincide = destinos.find(d => d.textosOC.some(t => {
+    const norm = cmx_normalizeKey_(t);
+    return norm && textoNorm.includes(norm);
+  }));
+  if (coincide) return { estado: "ok", destino: coincide };
+  if (destinos.length === 1) return { estado: "ok", destino: destinos[0] };
+  return { estado: "pendiente", destino: null };
+}
+
+/**
+ * Llamada desde el asistente cuando el usuario escribe el ID de destino de una OC pendiente.
+ * Si el usuario también copió la dirección de la OC, la guarda en Texto_OC de ese destino,
+ * para que la próxima OC con esa dirección se reconozca sola.
+ *
+ * @param {String} idDestino ID escrito por el usuario (Id_destino de Destinatarios).
+ * @param {String} [textoOC] Dirección tal como aparece en la OC (opcional).
+ * @return {{idDestino: String, nombreDestino: String, ciudad: String, aprendido: Boolean}}
+ */
+function cmx_resolverDestinoPorId(idDestino, textoOC) {
+  const id = String(idDestino || "").trim();
+  const destino = cmx_leerDestinosCliente_(CONFIG.CLIENTES["CMX"].SOLICITANTE).find(d => d.idDestino === id);
+  if (!destino) {
+    throw new Error(`El ID ${id} no está en Destinatarios para CMX. Agréguelo a la hoja y vuelva a intentar.`);
+  }
+  if (!destino.ciudad) {
+    throw new Error(`El ID ${id} no tiene ciudad en Destinatarios. Complétela y vuelva a intentar.`);
+  }
+
+  let aprendido = false;
+  const texto = String(textoOC || "").trim();
+  if (texto && !destino.textosOC.some(t => cmx_normalizeKey_(t) === cmx_normalizeKey_(texto))) {
+    const sh = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getSheetByName(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
+    const cols = cmx_colsDestinatarios_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
+    if (cols.texto === -1) throw new Error("La hoja Destinatarios no tiene la columna Texto_OC.");
+    sh.getRange(destino.fila, cols.texto + 1).setValue(destino.textosOC.concat([texto]).join(" | "));
+    aprendido = true;
+  }
+  return { idDestino: destino.idDestino, nombreDestino: destino.nombreDestino, ciudad: destino.ciudad, aprendido: aprendido };
 }
