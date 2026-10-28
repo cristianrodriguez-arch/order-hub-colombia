@@ -1,21 +1,55 @@
 /**
  * =========================================================================================
  * PROYECTO: ORDER HUB - ISDIN COLOMBIA
- * MÓDULO: INTEGRACIÓN Y PROCESAMIENTO DE ÓRDENES DE COMPRA - CMX S.A.S. (EXCEL)
- * ARCHIVO: cmx_motor.gs
- * ESTADO: PRODUCCIÓN - SOPORTE MATERIALES SAP DE 12 DÍGITOS Y KAM DESACOPLADO
+ * ARCHIVO: cmx_motor.js
+ * MÓDULO: Integración de órdenes de compra (OC) de CMX S.A.S. a partir de archivos Excel
  * =========================================================================================
- * 📝 CORRECCIONES APLICADAS:
- * 1. ELIMINACIÓN DE LA RESTRICCIÓN DE 10 DÍGITOS: Tanto en `cmx_generarCsvSap_` como en
- *    `cmx_enviarNotificacionKam_`, se eliminó la condición `length > 10` que borraba
- *    los materiales de 12 dígitos (ej: 690032151480 / Ureadin Cream10).
- * 2. ESTRUCTURA CSV HOMOLOGADA: 16 columnas para SAP oficial (idéntico a Medipiel y CEN).
- * 3. KAM 100% DESACOPLADO: Utiliza `obtenerInfoKamPorSolicitante_()` de main.gs.
- * 4. ESCUDO ANTI-DUPLICADOS COMPUESTO: Evalúa la combinación `${OC}_${SAPID}`.
- * 5. DOBLE CATÁLOGO CON RED DE SEGURIDAD: Precios CMX con fallback al catálogo maestro.
+ * QUÉ CONTIENE
+ *   Toda la lógica que procesa los pedidos de CMX:
+ *   1. Lee cada Excel de la carpeta de CMX (CONFIG.CLIENTES.CMX.FOLDER_ID) y busca el número
+ *      de OC, la fecha, el destino y la tabla de productos.
+ *   2. Asigna a cada producto su material SAP y su precio, usando las hojas Productos y Bodega.
+ *   3. Decide el destino de cada OC con la columna Texto_OC de la hoja Destinatarios.
+ *   4. Al confirmar, escribe una fila por OC en la hoja CONSOLIDADO, genera el CSV de carga a SAP
+ *      en la carpeta CONFIG.FOLDER_CSV_ID, mueve cada Excel a la carpeta de procesados y envía
+ *      un correo a la KAM asignada.
+ *
+ * QUIÉN LO LLAMA
+ *   - wizard_ui.html (asistente de carga). La configuración CMX de esa pantalla indica los nombres
+ *     de las funciones (fnPreAnalizar = preAnalizarCMX, fnGuardar = guardarDefinitivoCMX). Además,
+ *     cuando hay OC sin destino, llama directamente a cmx_resolverDestinoPorId().
+ *   - main.js NO llama a este archivo. Lo que este archivo usa de main.js es: CONFIG,
+ *     nombreArchivoSap_(), enviarCorreoKam_(), obtenerInfoKamPorSolicitante_() y construirCsvSap_().
  * =========================================================================================
  */
 
+/**
+ * Lee los Excel de CMX y devuelve las OC y los productos encontrados, para que el asistente
+ * los muestre antes de guardar. NO escribe en CONSOLIDADO ni en carpetas; solo lee.
+ * Llamada desde wizard_ui.html (fnPreAnalizar de CMX).
+ *
+ * Pasos:
+ * PASO 1. Lee las OC que ya existen en CONSOLIDADO (clave OC_SAP) para no volver a cargarlas.
+ * PASO 2. Lee la hoja Destinatarios (cruce y bodega). Ojo: el destino final lo decide
+ *         cmx_resolverDestino_, no este paso.
+ * PASO 3. Carga precios y materiales de CMX (cmx_getProductosPreciosMap_).
+ * PASO 4. Lista los Excel (.xls, .xlsx, .xlsm) de la carpeta de CMX.
+ * PASO 5. Lee cada Excel (cmx_motorLecturaExcel).
+ *
+ * Efectos: crea y borra (manda a la papelera) copias temporales de los Excel en Google Sheets.
+ * No envía correos.
+ *
+ * @return {{pedidosExtraidos: Array<Object>, itemsExtraidos: Array<Object>,
+ *           errores: Array<String>, yaProcesados: Array<String>}}
+ *   pedidosExtraidos: una entrada por OC (Pedido_ID, Fecha_Pedido, Id_Destino, Destinatario,
+ *                     Ciudad, Destino_Pendiente, Archivo_Nombre, Archivo_Id, etc.).
+ *   itemsExtraidos: una entrada por producto (Item_ID, Pedido_ID, Producto_Cod, Descripcion,
+ *                   Cant, Valor_Unitario, EAN_Mapeado, Materiales_Disponibles).
+ *   errores: textos "archivo: motivo" de los Excel que no se pudieron leer.
+ *   yaProcesados: OC que ya estaban en CONSOLIDADO y se omiten.
+ * @throws {Error} Si no existe la configuración de CMX en main.js, o si ningún Excel se pudo
+ *                 leer y hubo errores (el mensaje incluye el detalle técnico).
+ */
 function preAnalizarCMX() {
   try {
     const configCli = CONFIG.CLIENTES["CMX"];
@@ -59,7 +93,9 @@ function preAnalizarCMX() {
     }
 
     // -------------------------------------------------------------------------------------
-    // PASO 2: MAPEO DE DESTINATARIOS PARA DIRECCIONAMIENTO GEOGRÁFICO DE ENTREGAS
+    // PASO 2: MAPEO DE DESTINATARIOS (cruce por texto, Id de destino y bodega)
+    // NOTA: diccDestinatarios y diccBodega se llenan aquí y se pasan a los siguientes pasos,
+    // pero la decisión de destino de cada OC la toma cmx_resolverDestino_ (no usa estos mapas).
     // -------------------------------------------------------------------------------------
     const shDest = ss.getSheetByName(CONFIG.SHEET_DESTINATARIOS || "Destinatarios");
     const diccDestinatarios = {};
@@ -134,6 +170,26 @@ function preAnalizarCMX() {
   }
 }
 
+/**
+ * Recorre los Excel de CMX uno por uno: crea una copia temporal en Google Sheets, lee la hoja
+ * de la OC, extrae cabecera y productos, y clasifica cada OC como nueva o ya procesada.
+ * Si un archivo falla, se registra en "errores" y se sigue con el siguiente.
+ *
+ * Efectos: crea una copia temporal del Excel (Drive) y la manda a la papelera al terminar.
+ * No escribe en CONSOLIDADO ni envía correos.
+ *
+ * @param {Array<GoogleAppsScript.Drive.File>} archivos Excel de Drive a procesar.
+ * @param {Object} diccBodega Mapa cruce de destino -> Id de destino. Se reenvía a
+ *                            cmx_extraerDatosHeuristico_, donde no se usa.
+ * @param {Object} diccProductos Precios y materiales por EAN o material (de cmx_getProductosPreciosMap_).
+ * @param {Object} configCli Configuración de CMX (CONFIG.CLIENTES.CMX de main.js).
+ * @param {Set<String>} pedidosProcesados Claves "OC_SAP" que ya están en CONSOLIDADO.
+ * @param {Object} diccDestinatarios Destinos por cruce. Se reenvía; no se usa dentro.
+ * @return {{pedidosExtraidos: Array<Object>, itemsExtraidos: Array<Object>,
+ *           errores: Array<String>, yaProcesados: Array<String>}}
+ *   yaProcesados contiene las OC que se omitieron por estar ya registradas.
+ * @throws No lanza error: los fallos de cada archivo quedan en "errores".
+ */
 function cmx_motorLecturaExcel(archivos, diccBodega, diccProductos, configCli, pedidosProcesados, diccDestinatarios) {
   const pedidosExtraidos = [];
   const itemsExtraidos = [];
@@ -215,6 +271,15 @@ function cmx_motorLecturaExcel(archivos, diccBodega, diccProductos, configCli, p
   return { pedidosExtraidos, itemsExtraidos, errores, yaProcesados };
 }
 
+/**
+ * Limpia un número de OC para compararlo y guardarlo: quita el apóstrofe inicial, convierte
+ * notación científica (ej. "4.5E+09") a número entero y elimina la parte decimal.
+ * Ejemplo: "'4500123.0" devuelve "4500123".
+ *
+ * @param {*} val Valor de la celda o del texto de la OC (puede ser número, texto o vacío).
+ * @return {String} OC limpia; cadena vacía si el valor era null, undefined o vacío.
+ * @throws No lanza errores.
+ */
 function cmx_limpiarOc_(val) {
   if (val === null || val === undefined) return "";
   let s = String(val).trim();
@@ -227,6 +292,17 @@ function cmx_limpiarOc_(val) {
   return s.trim();
 }
 
+/**
+ * Crea una copia del Excel como Google Sheets en la misma carpeta de Drive, para poder leerla
+ * con SpreadsheetApp. La copia se llama igual que el Excel, sin extensión.
+ * Usa el servicio avanzado "Drive" (debe estar activado en el proyecto de Apps Script).
+ *
+ * Efectos: crea un archivo nuevo en Drive (la función que llama lo borra al terminar).
+ *
+ * @param {GoogleAppsScript.Drive.File} file Excel original en Drive.
+ * @return {String} Id de la copia en Google Sheets.
+ * @throws {Error} Si Drive no puede crear la copia (lo captura cmx_motorLecturaExcel y lo registra en errores).
+ */
 function cmx_convertirExcelASheet_(file) {
   const fileId = file.getId();
   const folderId = file.getParents().next().getId();
@@ -241,9 +317,40 @@ function cmx_convertirExcelASheet_(file) {
   return tempFile.id;
 }
 
+/**
+ * Interpreta una hoja de OC de CMX sin plantilla fija: busca el número de OC, la fecha, el destino
+ * y la fila donde empieza la tabla de productos (por los encabezados), y arma los productos con
+ * su precio y su material SAP.
+ * No escribe en ninguna hoja ni carpeta. Abre la hoja de configuración (SpreadsheetApp), pero
+ * esa variable no se usa.
+ *
+ * Pasos:
+ * 1. Junta el texto de las filas 1 a 12 (todas las columnas) para buscar el destino.
+ * 1b. Decide el destino con cmx_resolverDestino_ (texto de la OC contra Texto_OC).
+ * 2. Recorre las filas 1 a 30: toma la OC y la fecha del pedido, y puntúa cada fila como
+ *    posible encabezado de la tabla (EAN/código, descripción y cantidad).
+ * 3. Si no encontró OC en el contenido, toma el primer número del nombre del archivo.
+ * 4. Si no encontró encabezados de tabla, lanza error.
+ * 5. Carga el stock de bodega (cmx_getBodegaStockMap_).
+ * 6. Recorre las filas de la tabla: omite filas vacías, cantidades <= 0 y filas TOTAL; para cada
+ *    producto busca el EAN con stock y el precio en diccProductos.
+ *
+ * @param {Array<Array<*>>} data Valores de la hoja del Excel (getValues()).
+ * @param {Object} diccBodega No se usa en esta función (se conserva en la firma).
+ * @param {Object} diccProductos Precios y materiales por EAN o material (de cmx_getProductosPreciosMap_).
+ * @param {Object} configCli Configuración de CMX (CONFIG.CLIENTES.CMX).
+ * @param {String} fileName Nombre del Excel (sirve de respaldo para la OC).
+ * @param {Object} diccDestinatarios No se usa; el destino se lee con cmx_leerDestinosCliente_.
+ * @return {{cabecera: Object, items: Array<Object>}}
+ *   cabecera: { ordenCompra, fechaPedido, fechaEntrega (siempre vacía aquí), idDestino,
+ *               destinatario, ciudad, destinoPendiente }.
+ *   items: una entrada por producto { codigo, descripcion, cant, valorUnitario, eanMapeado,
+ *          materialesDisponibles }.
+ * @throws {Error} Si no se detecta la tabla de productos (columna de código de barras y cantidad).
+ */
 function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli, fileName, diccDestinatarios) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  
+
   let cabecera = {
     ordenCompra: "",
     fechaPedido: "",
@@ -328,17 +435,21 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
     }
   }
 
+  // 3. Respaldo: si no se encontró la OC en el contenido, se toma el primer número del nombre del archivo.
   if (!cabecera.ordenCompra && fileName) {
     const matches = fileName.match(/\d+/);
     if (matches) cabecera.ordenCompra = matches[0];
   }
 
+  // 4. Si no se encontró ninguna fila con encabezados de tabla, el archivo no se puede leer.
   if (filaInicioTabla === -1) {
     throw new Error("No se pudo detectar la tabla de productos (columna de Código de barras y Cantidad) en el archivo.");
   }
 
+  // 5. Stock de bodega por EAN y por material (se carga una vez por archivo).
   const stockBodega = cmx_getBodegaStockMap_();
 
+  // 6. Recorre los productos, debajo del encabezado de la tabla.
   for (let r = filaInicioTabla + 1; r < data.length; r++) {
     if (!data[r].join("").trim()) continue; 
 
@@ -400,6 +511,24 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
   return { cabecera, items };
 }
 
+/**
+ * Elige el código EAN de una fila de producto. Una celda puede traer varios códigos separados
+ * por espacio, coma o punto y coma. Se prefiere el primero que tenga stock; si ninguno tiene,
+ * se usa el primero.
+ *
+ * Pasos:
+ * 1. Separa la celda en códigos y limpia cada uno (solo dígitos, máximo 13).
+ * 2. Descarta los códigos de menos de 7 dígitos.
+ * 3. Devuelve el primer código con stock mayor a cero y sus materiales.
+ * 4. Si ninguno tiene stock, devuelve el primer código y los materiales que tenga en bodega.
+ *
+ * @param {*} rawVal Texto de la celda de código de barras (puede estar vacía).
+ * @param {Object} stockBodega Mapa de cmx_getBodegaStockMap_.
+ * @return {{eanMapeado: String, materialesDisponibles: Array<Object>}}
+ *   eanMapeado: código elegido, o "" si no hay código válido.
+ *   materialesDisponibles: { material, stock, fechaDisplay, isExpired } de bodega, o [].
+ * @throws No lanza errores.
+ */
 function cmx_procesarYBuscarEan_(rawVal, stockBodega) {
   let candidatos = [];
   if (!rawVal) return { eanMapeado: "", materialesDisponibles: [] };
@@ -434,6 +563,15 @@ function cmx_procesarYBuscarEan_(rawVal, stockBodega) {
   };
 }
 
+/**
+ * Deja solo los dígitos de un código EAN. Si el valor llega en notación científica
+ * (ej. "7.7E+12") lo convierte a número completo. Si tiene más de 13 dígitos, conserva
+ * solo los primeros 13 (sin avisar).
+ *
+ * @param {*} val Valor de la celda (número o texto).
+ * @return {String} Solo dígitos, máximo 13; cadena vacía si no quedó ningún dígito.
+ * @throws No lanza errores.
+ */
 function cmx_limpiarEanDeVerdad_(val) {
   if (val === null || val === undefined) return "";
   let s = String(val).trim();
@@ -458,6 +596,20 @@ function cmx_limpiarEanDeVerdad_(val) {
   return s;
 }
 
+/**
+ * Busca en una fila una celda que contenga alguna de las palabras clave y devuelve el valor
+ * que está a su derecha (primera celda no vacía). Si no hay nada a la derecha, usa la celda
+ * de la fila siguiente, en la misma columna. Las fechas se devuelven como dd/MM/yyyy.
+ *
+ * La coincidencia es por contenido: la celda sirve si contiene la palabra clave (sin tildes
+ * ni signos). Ojo: palabras cortas (ej. "PO", "N") coinciden con muchas palabras.
+ *
+ * @param {Array<Array<*>>} data Valores de la hoja.
+ * @param {Number} row Índice (base 0) de la fila donde se busca.
+ * @param {Array<String>} keywords Palabras clave a buscar (ej. ["OC", "PEDIDO"]).
+ * @return {String} Valor encontrado, o cadena vacía si no hay coincidencia.
+ * @throws No lanza errores.
+ */
 function cmx_buscarValorAlLado_O_Abajo_(data, row, keywords) {
   for (let c = 0; c < data[row].length; c++) {
     const cellVal = cmx_normalizeKey_(data[row][c]);
@@ -488,6 +640,15 @@ function cmx_buscarValorAlLado_O_Abajo_(data, row, keywords) {
   return "";
 }
 
+/**
+ * Convierte un texto en una clave para comparar: quita tildes, espacios, puntos y signos,
+ * y lo pasa a mayúsculas. Ejemplo: "Material Id" devuelve "MATERIALID"; "N°" devuelve "N".
+ * Se usa en todas las comparaciones de encabezados y códigos de este archivo.
+ *
+ * @param {*} text Texto, número o celda vacía.
+ * @return {String} Clave normalizada; cadena vacía si el valor era null o undefined.
+ * @throws No lanza errores.
+ */
 function cmx_normalizeKey_(text) {
   if (text === null || text === undefined) return "";
   return String(text)
@@ -499,9 +660,18 @@ function cmx_normalizeKey_(text) {
 }
 
 /**
- * Carga el catálogo en 2 fases:
- * Fase 1: Carga el catálogo global de Productos como red de seguridad.
- * Fase 2: Sobreescribe con máxima prioridad los precios de la lista de CMX.
+ * Arma el mapa de precios y materiales de la hoja Productos, en dos fases:
+ * Fase 1: carga todos los productos (catálogo general) como respaldo; si una clave ya existe, no se cambia.
+ * Fase 2: sobrescribe con la tarifa de CMX: solo las filas cuya columna "Lista Cliente" coincide
+ *         con la lista de CMX (CONFIG.CLIENTES.CMX.LISTA_PRECIOS).
+ * Cada clave es el EAN o el material, normalizados con cmx_normalizeKey_.
+ *
+ * Lee la hoja Productos (no escribe). Si la hoja no existe, o no tiene las columnas EAN, Costo
+ * o Material, devuelve un mapa vacío sin avisar.
+ *
+ * @return {Object} Mapa clave -> { precio: Number, descripcion: String,
+ *                  materialOficial: String, eanOficial: String }.
+ * @throws No lanza errores.
  */
 function cmx_getProductosPreciosMap_() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -564,6 +734,8 @@ function cmx_getProductosPreciosMap_() {
 
   // Fase 2: Sobreescribir con la tarifa específica de CMX
   for (let i = 1; i < data.length; i++) {
+    // Se acepta la fila si su Lista Cliente es la de CMX. Ojo: una Lista Cliente vacía, o una
+    // parte del nombre de la lista, también cumple esta condición.
     const listaVal = cmx_normalizeKey_(data[i][colLista]);
     if (listaVal !== targetListaKey && !targetListaKey.includes(listaVal)) continue;
     
@@ -588,6 +760,24 @@ function cmx_getProductosPreciosMap_() {
   return dicc;
 }
 
+/**
+ * Arma el mapa de stock de la hoja Bodega, indexado por EAN y por material (normalizados).
+ * Un mismo producto puede tener varias filas (lotes con distinta fecha de vencimiento);
+ * todas se guardan en la misma lista.
+ *
+ * Columnas: el EAN se lee SIEMPRE de la columna J (posición 9, fija). El material se busca
+ * por encabezado (MATERIAL o SAP) y, si no aparece, se toma la columna A. El stock se busca
+ * por encabezado y, si no aparece, se toma la columna F. La fecha de vencimiento se toma
+ * del primer encabezado que diga VENCIMIENTO, CADUCIDAD, FECHA o VENCE.
+ *
+ * Lee la hoja Bodega (no escribe). Si la hoja no existe o tiene menos de 2 filas, devuelve {}.
+ *
+ * @return {Object} Mapa clave -> Array<{ material: String, stock: Number,
+ *                  fechaDisplay: String, isExpired: Boolean }>.
+ *                  fechaDisplay es "yyyy-MM", el texto original, o "Sin fecha".
+ *                  isExpired es true si la fecha ya pasó.
+ * @throws No lanza errores.
+ */
 function cmx_getBodegaStockMap_() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const shBodega = ss.getSheetByName(CONFIG.SHEET_BODEGA || "Bodega");
@@ -664,6 +854,16 @@ function cmx_getBodegaStockMap_() {
   return stockMap;
 }
 
+/**
+ * SIN USO, PENDIENTE DE ELIMINAR. Ninguna función del proyecto la llama desde que el destino
+ * de CMX se decide con cmx_resolverDestino_. No se borra todavía; se deja documentada.
+ * Buscaba la ciudad de un cliente en la hoja Clientes (o "Listado clientes"). Si no la encontraba,
+ * devolvía "COTA", algo que hoy contradice la regla de no asignar ciudad por defecto.
+ *
+ * @param {String|Number} solicitanteId ID SAP del cliente a buscar.
+ * @return {String} Ciudad en mayúsculas, o "COTA" si no se encuentra.
+ * @throws No lanza errores controlados (si la hoja no existe devuelve "COTA").
+ */
 function cmx_getCiudadParaCliente_(solicitanteId) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const shClientes = ss.getSheetByName("Clientes") || ss.getSheetByName("Listado clientes") || ss.getSheetByName("Listado_clientes") || ss.getSheetByName("Listado Clientes");
@@ -687,11 +887,15 @@ function cmx_getCiudadParaCliente_(solicitanteId) {
 }
 
 /**
- * Consulta la información del KAM asignado consumiendo directamente
- * la función centralizada obtenerInfoKamPorSolicitante_() de main.gs.
- * 
- * @param {String|Number} solicitanteId ID de SAP del solicitante.
- * @return {Object} Objeto con name, initials y email.
+ * Devuelve el nombre, las iniciales y el correo de la KAM asignada al cliente.
+ * Usa obtenerInfoKamPorSolicitante_() (main.js). Si esa función no existe, falla o no encuentra
+ * la KAM, devuelve un valor de respaldo: nombre "KAM ISDIN", iniciales "MC" y correo vacío.
+ * Con correo vacío el envío de la notificación falla (lo captura guardarDefinitivoCMX).
+ * No escribe nada.
+ *
+ * @param {String|Number} solicitanteId ID de SAP del solicitante (CMX: 11033482).
+ * @return {{name: String, initials: String, email: String}} Nombre, iniciales y correo de la KAM.
+ * @throws No lanza errores (los errores de la consulta se registran en el log).
  */
 function cmx_getKamInitialsAndName_(solicitanteId) {
   if (typeof obtenerInfoKamPorSolicitante_ === "function") {
@@ -716,6 +920,42 @@ function cmx_getKamInitialsAndName_(solicitanteId) {
   };
 }
 
+/**
+ * Guarda en firme las OC de CMX que el usuario confirmó en el asistente. Es la única función que
+ * escribe datos. Llamada desde wizard_ui.html (fnGuardar de CMX).
+ *
+ * Escribe en: hoja CONSOLIDADO (filas nuevas en columnas A a K), carpeta CONFIG.FOLDER_CSV_ID
+ * (un CSV), carpeta CONFIG.CLIENTES.CMX.PROCESSED_FOLDER_ID (mueve y renombra cada Excel),
+ * y envía un correo a la KAM si paquete.notificarKAM es true.
+ *
+ * Pasos:
+ * 1. Revisa que exista la configuración de CMX y la hoja CONSOLIDADO.
+ * 2. Rechaza el guardado si alguna OC no tiene destino confirmado.
+ * 3. Escudo anti-duplicados: quita las OC que ya están en CONSOLIDADO (clave OC_SAP).
+ * 4. Calcula el prefijo del consecutivo (iniciales KAM + año, por ejemplo "MC-26") y el último número usado.
+ * 5. Arma una fila por OC (total de unidades y valor; las OC sin unidades se omiten).
+ * 6. Crea el CSV en la carpeta de CSV. Si falla, no se escribe nada en CONSOLIDADO.
+ * 7. Escribe las filas en CONSOLIDADO. Si falla, manda el CSV a la papelera.
+ * 8. Mueve cada Excel a la carpeta de procesados y lo renombra con su consecutivo (errores ignorados).
+ * 9. Si se pidió, envía el correo a la KAM (si falla, solo queda en el log y el guardado sigue).
+ *
+ * @param {Object} paquete Datos confirmados en el asistente:
+ *   pedidos: Array de OC de cmx_motorLecturaExcel (Pedido_ID, Fecha_Pedido, Id_Destino,
+ *            Destinatario, Ciudad, Destino_Pendiente, Archivo_Id, etc.).
+ *   items: Array de productos (Item_ID, Pedido_ID, Producto_Cod, Cant, Valor_Unitario, Descripcion).
+ *   materialesSeleccionados: { Item_ID: material SAP elegido }.
+ *   noActualizadosSeleccionados: { Item_ID: true } si el producto se marca como no actualizado.
+ *   backordersSeleccionados: { Item_ID: true } si el producto va como back order (solo en el correo).
+ *   fechasEntregas: { Pedido_ID: { fecha: String } } fecha de entrega que escribió el usuario.
+ *   notificarKAM: Boolean, si se envía el correo a la KAM.
+ * @return {{success: Boolean, mensaje: String, csvData: String, fileName: String}}
+ *   mensaje: resumen con los consecutivos asignados.
+ *   csvData: el CSV en base64 (para descargarlo desde el navegador).
+ *   fileName: nombre del CSV creado en Drive.
+ * @throws {Error} Con mensaje para el usuario si: falta la configuración o la hoja CONSOLIDADO;
+ *                 hay OC sin destino; todas las OC ya estaban registradas; no hay posiciones válidas;
+ *                 no se pudo guardar el CSV (no se registra nada) o no se pudo escribir CONSOLIDADO.
+ */
 function guardarDefinitivoCMX(paquete) {
   try {
     const configCli = CONFIG.CLIENTES["CMX"];
@@ -725,13 +965,13 @@ function guardarDefinitivoCMX(paquete) {
     const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!shConsolidado) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
-    // No se guarda ninguna orden sin destino confirmado
+    // 2. No se guarda ninguna orden sin destino confirmado
     const sinDestino = (paquete.pedidos || []).filter(p => p.Destino_Pendiente || !p.Id_Destino || !p.Ciudad);
     if (sinDestino.length > 0) {
       throw new Error("Hay órdenes sin destino confirmado: " + sinDestino.map(p => p.Pedido_ID).join(", ") + ". Indique el ID de destino antes de guardar.");
     }
 
-    // ESCUDO EN TIEMPO REAL: Re-verifica antes de escribir en CONSOLIDADO
+    // 3. ESCUDO EN TIEMPO REAL: vuelve a revisar CONSOLIDADO antes de escribir, por si alguien ya guardó esas OC
     const dataConsCheck = shConsolidado.getDataRange().getValues();
     let colOcCheck = 1;
     let colSapCheck = 2;
@@ -769,6 +1009,7 @@ function guardarDefinitivoCMX(paquete) {
 
     paquete.pedidos = pedidosFiltrados;
 
+    // 4. Prefijo del consecutivo (iniciales KAM + año) y búsqueda del último número usado en CONSOLIDADO.
     const kamInfo = cmx_getKamInitialsAndName_(configCli.SOLICITANTE);
     const yy = String(new Date().getFullYear()).slice(-2); 
     const prefix = kamInfo.initials + "-" + yy; 
@@ -785,7 +1026,7 @@ function guardarDefinitivoCMX(paquete) {
       }
     }
     
-    // Un consecutivo por OC (antes todas las OCs del lote compartían el mismo Id)
+    // 5. Arma una fila por OC. Cada OC recibe su propio consecutivo (ej. MC-260001, MC-260002).
     const filasNuevas = [];
     const pedidosRegistrados = [];
     const idPorPedido = {};
@@ -798,7 +1039,9 @@ function guardarDefinitivoCMX(paquete) {
       itemsPedido.forEach(item => {
         let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
         
-        // Validación segura sin rechazar materiales SAP de 12 dígitos
+        // Se considera "no actualizado" si el usuario lo marcó, si no hay material, si el material
+        // contiene "SIN_", si es igual al EAN, o si es un EAN de 13 dígitos que empieza por 84.
+        // Los materiales SAP de 12 dígitos sí se aceptan.
         const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
                                 (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
 
@@ -843,7 +1086,7 @@ function guardarDefinitivoCMX(paquete) {
     const idsGenerados = pedidosRegistrados.map(p => idPorPedido[p.Pedido_ID]);
     const paqueteRegistrado = Object.assign({}, paquete, { pedidos: pedidosRegistrados });
 
-    // 1. Guardar el CSV ANTES de CONSOLIDADO: si falla, la OC no queda marcada como procesada.
+    // 6. Guardar el CSV ANTES de CONSOLIDADO: si falla, la OC no queda marcada como procesada.
     const csvData = cmx_generarCsvSap_(paqueteRegistrado);
     const fileName = nombreArchivoSap_(`Pedido_${idsGenerados[0]}.csv`);
     let archivoCsv = null;
@@ -855,7 +1098,7 @@ function guardarDefinitivoCMX(paquete) {
       throw new Error("No se pudo guardar el CSV en Drive (no se registró nada en CONSOLIDADO): " + csvDriveErr.message);
     }
 
-    // 2. Escribir CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.
+    // 7. Escribir CONSOLIDADO. Si falla, se retira el CSV para no dejar un archivo huérfano.
     try {
       const lastRow = shConsolidado.getLastRow();
       shConsolidado.getRange(lastRow + 1, 1, filasNuevas.length, filasNuevas[0].length).setValues(filasNuevas);
@@ -865,7 +1108,7 @@ function guardarDefinitivoCMX(paquete) {
       throw new Error("Fallo al escribir en CONSOLIDADO; el CSV se envió a la papelera: " + errSheets.message);
     }
 
-    // 3. Mover y renombrar cada Excel con el consecutivo de su propia OC
+    // 8. Mover y renombrar cada Excel con el consecutivo de su propia OC. Si un archivo falla, se ignora.
     const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
     pedidosRegistrados.forEach(p => {
       if (p.Archivo_Id) {
@@ -881,6 +1124,7 @@ function guardarDefinitivoCMX(paquete) {
       }
     });
 
+    // 9. Correo a la KAM (opcional). Si falla, el guardado ya quedó hecho y solo se registra en el log.
     if (paquete.notificarKAM) {
       try {
         cmx_enviarNotificacionKam_(paqueteRegistrado, idsGenerados.join(", "), pedidosRegistrados[0].Ciudad);
@@ -902,8 +1146,15 @@ function guardarDefinitivoCMX(paquete) {
 }
 
 /**
- * Arma los pedidos CMX y delega el formato del CSV en construirCsvSap_ (main.gs).
- * Acepta códigos SAP oficiales de hasta 12 dígitos (ej: 690032151480).
+ * Arma el contenido del CSV de carga a SAP para las OC de CMX. Cada línea toma el material elegido
+ * por el usuario; si el producto es "no actualizado", el material va vacío (SAP lo deja como back order).
+ * El formato del CSV lo define construirCsvSap_ (main.js). Acepta materiales SAP de 12 dígitos
+ * (ej. 690032151480). No escribe en Drive; quien lo llama crea el archivo.
+ *
+ * @param {Object} paquete Datos de guardarDefinitivoCMX (pedidos ya filtrados, items,
+ *                         materialesSeleccionados, noActualizadosSeleccionados, fechasEntregas).
+ * @return {String} Texto del CSV.
+ * @throws No lanza errores controlados; un dato mal formado puede provocar error de JavaScript.
  */
 function cmx_generarCsvSap_(paquete) {
   const configCli = CONFIG.CLIENTES["CMX"];
@@ -914,7 +1165,8 @@ function cmx_generarCsvSap_(paquete) {
     const lineas = itemsPedido.map((item) => {
       let matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
 
-      // CORRECCIÓN: Permite materiales de 12 dígitos, descarta EANs (13 dígitos que empiezan por 84) o vacíos
+      // Material "no actualizado" = marcado por el usuario, vacío, con "SIN_", igual al EAN, o EAN de 13 dígitos que empieza por 84.
+      // Los materiales de 12 dígitos sí se aceptan.
       const isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) ||
                               (!matSeleccionado || matSeleccionado.includes("SIN_") || matSeleccionado === item.Producto_Cod || (matSeleccionado.length === 13 && matSeleccionado.startsWith("84")));
 
@@ -934,6 +1186,23 @@ function cmx_generarCsvSap_(paquete) {
   return construirCsvSap_(pedidosCsv);
 }
 
+/**
+ * Envía a la KAM un correo HTML con el resumen de las OC registradas: por cada OC, los productos,
+ * el material SAP, el valor estimado a facturar (OK), el valor en back order y los productos
+ * "no actualizados" (con alerta). Lo llama guardarDefinitivoCMX solo si se pidió notificar.
+ *
+ * Escribe: envía un correo (MailApp, vía enviarCorreoKam_ de main.js). En modo PRUEBA, el correo
+ * sale con el prefijo [PRUEBA] y puede ir a otra dirección. Con correo de KAM vacío, el envío falla.
+ *
+ * @param {Object} paquete Datos de la OC registrada: pedidos (los que quedaron registrados),
+ *                         items, materialesSeleccionados, noActualizadosSeleccionados y
+ *                         backordersSeleccionados (ver guardarDefinitivoCMX).
+ * @param {String} idsAsignados Consecutivos asignados, separados por coma (ej. "MC-260001, MC-260002").
+ * @param {String} ciudadDestino Ciudad que aparece en el correo. Se toma solo de la primera OC y
+ *                               se usa para todas.
+ * @return {void}
+ * @throws {Error} Si MailApp no puede enviar el correo (quien llama lo captura).
+ */
 function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
   const kamInfo = cmx_getKamInitialsAndName_(CONFIG.CLIENTES["CMX"].SOLICITANTE);
   const kamEmail = kamInfo.email;
@@ -963,7 +1232,7 @@ function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
     itemsPedido.forEach(item => {
       let mat = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
       
-      // CORRECCIÓN: Admite materiales de 12 dígitos sin mandarlos erróneamente a No Actualizados
+      // Mismo criterio de "no actualizado" que en el CSV (los materiales de 12 dígitos no cuentan como no actualizados)
       let isNoActualizado = (paquete.noActualizadosSeleccionados && paquete.noActualizadosSeleccionados[item.Item_ID]) || 
                             (!mat || mat.includes("SIN_") || mat === item.Producto_Cod || (mat.length === 13 && mat.startsWith("84")));
       let isBO = !isNoActualizado && (paquete.backordersSeleccionados && paquete.backordersSeleccionados[item.Item_ID]);
@@ -1105,9 +1374,15 @@ function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
  */
 
 /**
- * Posiciones (base 0) de las columnas que necesita el destino, leídas de los encabezados de Destinatarios.
- * @param {Array} encabezados Primera fila de Destinatarios.
- * @return {{origen: Number, id: Number, nombre: Number, ciudad: Number, texto: Number}} -1 si no existe.
+ * Busca en los encabezados de la hoja Destinatarios la posición de las columnas que usa el destino
+ * (Id_origen, Id_destino, Nombre_destino, Ciudad, Texto_OC). La búsqueda no distingue mayúsculas,
+ * tildes ni espacios (usa cmx_normalizeKey_). Así, el orden de las columnas no importa.
+ * No escribe nada.
+ *
+ * @param {Array<*>} encabezados Primera fila de la hoja Destinatarios.
+ * @return {{origen: Number, id: Number, nombre: Number, ciudad: Number, texto: Number}}
+ *   Posición (base 0) de cada columna; -1 si la columna no existe.
+ * @throws No lanza errores.
  */
 function cmx_colsDestinatarios_(encabezados) {
   const h = encabezados.map(x => cmx_normalizeKey_(x));
@@ -1121,19 +1396,32 @@ function cmx_colsDestinatarios_(encabezados) {
 }
 
 /**
- * Convierte la celda Texto_OC en una lista de textos (separados por " | ").
- * @param {*} valor Contenido de la celda.
- * @return {Array<String>}
+ * Convierte la celda Texto_OC en una lista de textos. Los textos van separados por " | ".
+ * Ejemplo: "CALLE 1 # 2 | BODEGA NORTE" devuelve ["CALLE 1 # 2", "BODEGA NORTE"].
+ * Quita espacios y descarta los textos vacíos. No escribe nada.
+ *
+ * @param {*} valor Contenido de la celda Texto_OC (puede estar vacía).
+ * @return {Array<String>} Lista de textos; [] si la celda está vacía.
+ * @throws No lanza errores.
  */
 function cmx_separarTextosOC_(valor) {
   return String(valor || "").split("|").map(t => t.trim()).filter(t => t);
 }
 
 /**
- * Destinos de Destinatarios que pertenecen al cliente (Id_origen = solicitante).
+ * Lee de la hoja Destinatarios todos los destinos que pertenecen al cliente, es decir, las filas
+ * cuyo Id_origen es igual al solicitante. Solo lee; no escribe.
+ * Si la hoja no existe, o no tiene las columnas Id_origen o Id_destino, devuelve [] sin avisar.
+ *
  * @param {String|Number} solicitante SAP ID del cliente (CMX: 11033482).
- * @return {Array<{idDestino: String, nombreDestino: String, ciudad: String, textosOC: Array<String>, fila: Number}>}
- *   fila: número de fila en la hoja (base 1).
+ * @return {Array<{idDestino: String, nombreDestino: String, ciudad: String,
+ *                 textosOC: Array<String>, fila: Number}>}
+ *   idDestino: Id_destino de la fila.
+ *   nombreDestino: Nombre_destino ("" si no existe la columna).
+ *   ciudad: Ciudad en mayúsculas ("" si no existe la columna o la celda está vacía).
+ *   textosOC: textos de Texto_OC (ver cmx_separarTextosOC_).
+ *   fila: número de fila en la hoja (base 1), para poder actualizarla después.
+ * @throws No lanza errores controlados.
  */
 function cmx_leerDestinosCliente_(solicitante) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -1158,10 +1446,18 @@ function cmx_leerDestinosCliente_(solicitante) {
 }
 
 /**
- * Decide el destino de una OC de CMX (reglas 1, 2 y 3 del encabezado).
- * @param {String} textoOC Texto de la cabecera de la OC (filas 1 a 12).
- * @param {Array} destinos Resultado de cmx_leerDestinosCliente_.
- * @return {{estado: String, destino: Object|null}} estado: "ok" o "pendiente".
+ * Decide el destino de una OC de CMX, con las reglas del encabezado de este bloque:
+ * 1. Si el texto de la OC contiene algún Texto_OC de un destino de CMX, ese destino.
+ * 2. Si no, y CMX tiene un solo destino, ese destino (aunque el texto no coincida).
+ * 3. Si no, la OC queda "pendiente" y no tiene destino; el asistente pide el ID.
+ * La comparación ignora mayúsculas, tildes y signos (cmx_normalizeKey_). No escribe nada.
+ *
+ * @param {String} textoOC Texto de las filas 1 a 12 de la OC, unido en una sola cadena.
+ * @param {Array<Object>} destinos Resultado de cmx_leerDestinosCliente_.
+ * @return {{estado: String, destino: Object|null}}
+ *   estado: "ok" (destino asignado) o "pendiente" (sin destino).
+ *   destino: el objeto de destino de cmx_leerDestinosCliente_, o null si está pendiente.
+ * @throws No lanza errores.
  */
 function cmx_resolverDestino_(textoOC, destinos) {
   const textoNorm = cmx_normalizeKey_(textoOC);
@@ -1175,13 +1471,24 @@ function cmx_resolverDestino_(textoOC, destinos) {
 }
 
 /**
- * Llamada desde el asistente cuando el usuario escribe el ID de destino de una OC pendiente.
- * Si el usuario también copió la dirección de la OC, la guarda en Texto_OC de ese destino,
- * para que la próxima OC con esa dirección se reconozca sola.
+ * Llamada desde wizard_ui.html (cmx_resolverDestinoPorId, con google.script.run) cuando el usuario
+ * escribe el ID de destino de una OC pendiente. Busca ese ID entre los destinos de CMX.
+ * Si además llega la dirección de la OC y no estaba guardada, la agrega a Texto_OC de ese destino
+ * (en la hoja Destinatarios, columna Texto_OC, separada por " | "), para que la próxima OC con esa
+ * dirección se reconozca sola ("aprendido").
+ *
+ * Escribe en: hoja Destinatarios, celda Texto_OC de la fila del destino (solo si aprende).
+ *
+ * Pasos:
+ * 1. Busca el ID entre los destinos de CMX. 2. Verifica que tenga ciudad.
+ * 3. Si hay dirección nueva, la guarda en Texto_OC.
  *
  * @param {String} idDestino ID escrito por el usuario (Id_destino de Destinatarios).
  * @param {String} [textoOC] Dirección tal como aparece en la OC (opcional).
  * @return {{idDestino: String, nombreDestino: String, ciudad: String, aprendido: Boolean}}
+ *   aprendido: true si se guardó la dirección en Texto_OC.
+ * @throws {Error} Si el ID no está en Destinatarios para CMX; si ese destino no tiene ciudad;
+ *                 o si la hoja Destinatarios no tiene la columna Texto_OC (solo cuando hay que guardar).
  */
 function cmx_resolverDestinoPorId(idDestino, textoOC) {
   const id = String(idDestino || "").trim();

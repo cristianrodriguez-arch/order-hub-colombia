@@ -1,29 +1,42 @@
 /**
  * =========================================================================================
  * PROYECTO: ORDER HUB - ISDIN COLOMBIA
- * MÓDULO: INTEGRACIÓN Y PROCESAMIENTO MULTICLIENTE - CEN (CENTRO DE NEGOCIOS CARVAJAL)
- * ARCHIVO: cen_motor.gs
- * ESTADO: PRODUCCIÓN - ENVÍO DE CORREO KAM AUTÓNOMO Y RESILIENTE + SAP 12 DÍGITOS
+ * ARCHIVO: cen_motor.js
+ * MÓDULO: Integración de pedidos CEN (Centro de Negocios de Carvajal), multicliente
  * =========================================================================================
- * 📝 NOVEDADES Y CORRECCIONES IMPLEMENTADAS:
- * 1. RESOLUCIÓN DE CORREO KAM RESILIENTE (DOBLE CAPA): `cen_getKamInfo_` ahora busca primero
- *    en `obtenerInfoKamPorSolicitante_()` y, si no existe o falla, busca de forma AUTÓNOMA
- *    directamente en la pestaña `Asignacion_KAM` de Google Sheets. El correo NUNCA queda vacío.
- * 2. COMPATIBILIDAD CON MATERIALES SAP DE 12 DÍGITOS: Elimina la restricción que descartaba
- *    códigos de Material SAP con más de 10 dígitos (ej: 690033624480 y 690032151480).
- * 3. DOBLE CATÁLOGO CON FALLBACK GLOBAL: Si un EAN existe en la hoja Productos (bajo cualquier
- *    tarifa), recupera su Material SAP oficial. Si no tiene saldo en Bodega, pasa a Back Order.
- * 4. ESCUDO ANTI-DUPLICADOS COMPUESTO: Evalúa la combinación única `${OC}_${SAPID}`.
- * 5. NOMBRE DEL CSV UNIFICADO POR FECHA: Estándar `Pedido_CEN_YYYYMMDD.csv`.
- * 6. FÓRMULA DE KAM PRESERVADA: Inyecta celda vacía ("") en CONSOLIDADO para proteger fórmulas.
- * 7. SANITIZACIÓN BASE64: Evita descargas vacías (0 bytes) eliminando saltos de línea (\r\n).
+ * QUÉ CONTIENE
+ * El portal CEN de Carvajal entrega un Excel con órdenes de compra (OC) de varios clientes de
+ * ISDIN. Este archivo:
+ *  1. Lee los Excel de la carpeta de entrada de CEN y arma la lista de pedidos y productos.
+ *  2. Registra cada cliente como PROVISIONAL en la hoja CONSOLIDADO (columna V).
+ *  3. Confirma todo al generar UN solo CSV de carga a SAP, y pasa las filas a definitivas.
+ *  4. Mueve los Excel terminados a la carpeta de procesados y envía los correos a las KAM.
+ *
+ * QUIÉN LO LLAMA
+ *  - wizard_ui.html (asistente de carga): llama a preAnalizarCEN, cenGuardarProvisional y
+ *    guardarDefinitivoCEN con google.script.run.
+ *  - main.js: no llama a estas funciones; es al revés. Este archivo usa de main.js la
+ *    configuración (CONFIG), los encabezados de CONSOLIDADO y las funciones comunes
+ *    (construirCsvSap_, enviarCorreoKam_, nombreArchivoSap_, obtenerInfoKamPorSolicitante_,
+ *    obtenerDiccionarioDestinatarios, obtenerMapaBodegaGeneral_, obtenerArchivosCliente_).
+ *  - medipiel_motor.js: aporta medipiel_getHeaderMap_ y medipiel_createRowArray_.
  * =========================================================================================
  */
 
 /**
- * Punto de entrada para la pre-analítica de los archivos CEN en Google Drive.
- * 
- * @return {Object} Contenedor con clientesDetectados, pedidosExtraidos, itemsExtraidos y errores.
+ * Punto de entrada del paso 1 de CEN: lee los Excel de la carpeta de entrada de CEN en Drive y
+ * devuelve los pedidos y productos que el asistente muestra.
+ * Antes de leer, borra las filas PROVISIONALES de CONSOLIDADO de TODAS las sesiones (quedaron de un
+ * análisis anterior, por ejemplo si se recargó la página), para que los consecutivos no se cuenten dos veces.
+ *
+ * ESCRIBE: borra filas provisionales en CONSOLIDADO. Los archivos temporales de conversión se crean
+ * y borran dentro de cen_motorLecturaExcel. No envía correos.
+ * LEE: CONSOLIDADO, Bodega, Productos, Destinatarios, Asignacion_KAM (indirectamente) y la carpeta de CEN.
+ *
+ * @return {Object} { clientesDetectados, pedidosExtraidos, itemsExtraidos, errores, yaProcesados, estadoArchivos }.
+ *   Si la carpeta no tiene Excel, devuelve listas vacías (sin estadoArchivos).
+ * @throws {Error} Si falta la configuración de CEN (CONFIG.CLIENTES.CEN o su FOLDER_ID) o si falla cualquier
+ *   paso. El mensaje empieza con "Error en preAnalizarCEN: ".
  */
 function preAnalizarCEN() {
   try {
@@ -38,6 +51,7 @@ function preAnalizarCEN() {
     // Un análisis nuevo borra las provisionales que dejó una sesión anterior (p. ej. si se recargó la página)
     cen_conBloqueo_(() => cen_borrarProvisionales_(shConsolidado, null));
 
+    // 2. Leer las OC + SAP ya registradas en CONSOLIDADO, para no volver a cargarlas.
     const pedidosProcesados = new Set();
     
     if (shConsolidado && shConsolidado.getLastRow() >= 2) {
@@ -68,9 +82,11 @@ function preAnalizarCEN() {
       }
     }
 
+    // 3. Cargar destinatarios y bodega.
     const diccDestinatarios = obtenerDiccionarioDestinatarios();
     const diccBodega = obtenerMapaBodegaGeneral_(ss.getSheetByName(CONFIG.SHEET_BODEGA || "Bodega"));
 
+    // 4. Listar los Excel de la carpeta de CEN (.xls, .xlsx, .xlsm), hasta el límite configurado.
     const folder = DriveApp.getFolderById(configCli.FOLDER_ID);
     const files = obtenerArchivosCliente_(folder, configCli);
     const archivos = [];
@@ -88,6 +104,7 @@ function preAnalizarCEN() {
       return { clientesDetectados: [], pedidosExtraidos: [], itemsExtraidos: [], errores: [], yaProcesados: [] };
     }
 
+    // 5. Leer los Excel y armar pedidos y productos.
     return cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesados, diccDestinatarios, ss);
 
   } catch (err) {
@@ -96,7 +113,32 @@ function preAnalizarCEN() {
 }
 
 /**
- * Convierte temporalmente los libros Excel de CEN y extrae cabeceras y posiciones de venta.
+ * Lee cada Excel de CEN y arma la lista de pedidos (OC) y de productos (items) que muestra el asistente.
+ * Para cada archivo: lo convierte a una hoja temporal, lee sus filas y borra la copia temporal al final,
+ * haya o no error.
+ *
+ * Reglas principales:
+ *  - Si el comprador de una OC no está en MAPEO_CLIENTES, el archivo queda BLOQUEADO (se agrega un
+ *    mensaje a errores y el archivo no se mueve a procesados).
+ *  - Si la combinación OC + Solicitante SAP ya está en CONSOLIDADO, la OC se omite y se anota en yaProcesados.
+ *  - Cada producto se busca primero en la tarifa del cliente y, si no está, en el catálogo general.
+ *    Si el EAN existe en catálogo, se toma su Material SAP. Si no tiene saldo en Bodega, queda como
+ *    back order (stock 0).
+ *  - Las líneas con cantidad 0 o sin EAN se ignoran.
+ *  - Un error en un archivo no detiene a los demás: se registra en errores y ese archivo queda bloqueado.
+ *
+ * ESCRIBE: crea y borra archivos temporales en la carpeta de cada Excel. No escribe en CONSOLIDADO.
+ *
+ * @param {Array<DriveApp.File>} archivos Excel de CEN a leer.
+ * @param {Object} diccBodega Mapa EAN -> lotes con stock (de obtenerMapaBodegaGeneral_).
+ * @param {Object} configCli Configuración de CEN (CONFIG.CLIENTES.CEN): MAPEO_CLIENTES, SAP, carpetas, etc.
+ * @param {Set<String>} pedidosProcesados Combinaciones "OC_SAP" ya registradas en CONSOLIDADO.
+ * @param {Object} diccDestinatarios Destinatarios indexados por EAN de entrega o por Solicitante SAP.
+ * @param {Spreadsheet} ss Libro principal (CONFIG.SPREADSHEET_ID), para leer la hoja Productos.
+ * @return {Object} { clientesDetectados, pedidosExtraidos, itemsExtraidos, errores, yaProcesados, estadoArchivos }.
+ *   estadoArchivos: por id de archivo, { ocsPendientes, bloqueado }. guardarDefinitivoCEN lo usa para
+ *   decidir si el Excel se mueve a procesados.
+ * @throws No lanza error por un archivo con problemas: los registra en errores y sigue con los demás.
  */
 function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesados, diccDestinatarios, ss) {
   const pedidosExtraidos = [];
@@ -108,6 +150,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
   // guardarDefinitivoCEN solo mueve el Excel a Procesados si todas sus OCs quedaron registradas.
   const estadoArchivos = {};
 
+  // Catálogo de Productos: se lee una sola vez para todos los archivos.
   const shProd = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
   const { catalogoPorTarifa, catalogoGlobal } = cen_getCatalogoProductosGlobal_(shProd);
 
@@ -116,15 +159,18 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
     const estado = { ocsPendientes: [], bloqueado: false };
     estadoArchivos[file.getId()] = estado;
     try {
+      // 1. Convertir el Excel a hoja temporal y leer sus filas.
       tempFileId = cen_convertirExcelASheet_(file);
       const tempSs = SpreadsheetApp.openById(tempFileId);
       const sheet = tempSs.getSheets()[0];
       const data = sheet.getDataRange().getValues();
 
+      // Archivo vacío o solo con encabezado: no hay nada que leer.
       if (data.length < 2) return;
 
       const head = data[0].map(h => cen_normalizeKey_(h));
       
+      // 2. Ubicar las columnas por el nombre del encabezado, no por su posición.
       const colCompradorEan = head.findIndex(h => h.includes("EANEMPRESACOMPRADORA") || h.includes("EANCOMPRADOR"));
       const colCompradorNombre = head.findIndex(h => h.includes("RAZONSOCIALEMPRESACOMPRADORA") || h.includes("NOMBRECOMPRADOR"));
       
@@ -141,10 +187,12 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
       const colLugarEntregaEan = head.findIndex(h => h.includes("EANLUGARENTREGA") || h.includes("EANPUNTODEVENTA") || h.includes("PUNTODEVENTA"));
       const colLugarEntregaNombre = head.findIndex(h => h.includes("NOMBRELUGARENTREGA") || h.includes("NOMBREPUNTODEVENTA"));
 
+      // 3. Si faltan columnas esenciales (OC, EAN o cantidad), el archivo queda bloqueado.
       if (colOc === -1 || colEanItem === -1 || colCant === -1) {
         throw new Error(`El archivo ${file.getName()} no contiene la estructura esperada de columnas CEN.`);
       }
 
+      // 4. Recorrer las filas de datos (la fila 1 son los encabezados).
       for (let r = 1; r < data.length; r++) {
         const row = data[r];
         if (!row.join("").trim()) continue;
@@ -155,6 +203,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
         const eanComprador = colCompradorEan !== -1 ? String(row[colCompradorEan]).trim() : "";
         const nombreComprador = colCompradorNombre !== -1 ? String(row[colCompradorNombre]).trim() : "CLIENTE_CEN";
         
+        // a) Homologar el comprador. Si no está en MAPEO_CLIENTES, el archivo queda bloqueado.
         const clienteInternoObj = cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli);
         if (!clienteInternoObj) {
           // No se inventa un Solicitante SAP: la OC se bloquea hasta registrar el comprador en
@@ -170,11 +219,13 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
         // Clave combinada: OC + SAP ID del Cliente
         const comboKey = `${ocRaw}_${cen_normalizeKey_(solicitanteSap)}`;
 
+        // b) Si esta OC + SAP ya están en CONSOLIDADO, se omite (ya fue registrada).
         if (pedidosProcesados.has(comboKey)) {
           if (!yaProcesados.includes(ocRaw)) yaProcesados.push(ocRaw);
           continue;
         }
 
+        // c) Crear la cabecera del pedido solo la primera vez que aparece la OC.
         let pedidoObj = pedidosExtraidos.find(p => p.Pedido_ID === ocRaw && p.Cliente_Key === clienteKey);
         if (!pedidoObj) {
           const eanEntrega = colLugarEntregaEan !== -1 ? String(row[colLugarEntregaEan]).trim() : "";
@@ -214,6 +265,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
           mapaClientesCount[clienteKey].count++;
         }
 
+        // d) Datos de la línea: EAN, descripción y cantidad.
         const eanItemRaw = cen_limpiarEan_(row[colEanItem]);
         const descItemExcel = colDescItem !== -1 ? String(row[colDescItem]).trim() : "Producto CEN";
         const cantItem = parseInt(row[colCant]) || 0;
@@ -235,6 +287,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
         let materialesDisponibles = [];
         let descripcionOficial = productoEncontrado && productoEncontrado.nombre ? productoEncontrado.nombre : descItemExcel;
 
+        // e) Si el producto existe en catálogo, se toma su Material SAP oficial y su precio.
         if (productoEncontrado && productoEncontrado.materialOficial) {
           eanMapeado = eanItemRaw;
           valorUnitario = productoEncontrado.precio || 0;
@@ -275,9 +328,11 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
       }
 
     } catch (e) {
+      // Error en este archivo: queda bloqueado y se sigue con el siguiente.
       estado.bloqueado = true;
       errores.push(`${file.getName()}: ${e.message}`);
     } finally {
+      // Borrar siempre la copia temporal, haya o no error.
       if (tempFileId) {
         try { DriveApp.getFileById(tempFileId).setTrashed(true); } catch (ignore) {}
       }
@@ -296,6 +351,14 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
   };
 }
 
+/**
+ * Limpia el número de orden de compra (OC) para que siempre sea el mismo texto, sin importar cómo lo guardó el Excel.
+ * Quita espacios y la comilla inicial. Si viene en notación científica (por ejemplo 4.5E+09) lo convierte a
+ * número entero. Quita la parte decimal (".0").
+ *
+ * @param {*} val Valor de la celda (texto, número o vacío).
+ * @return {String} OC limpia, o "" si la celda estaba vacía.
+ */
 function cen_limpiarOc_(val) {
   if (val === null || val === undefined) return "";
   let s = String(val).trim();
@@ -309,10 +372,15 @@ function cen_limpiarOc_(val) {
 }
 
 /**
- * Homologa el comprador CEN contra CONFIG.CLIENTES.CEN.MAPEO_CLIENTES.
+ * Homologa el comprador CEN contra CONFIG.CLIENTES.CEN.MAPEO_CLIENTES. Busca primero por EAN del comprador
+ * y, si no coincide, por alias contenido en el nombre del comprador. Devuelve el primer cliente que coincida.
+ * No escribe nada ni lanza errores.
  *
- * @return {Object|null} { key, nombreDisplay, solicitante, listaPrecios }, o null si el comprador
- *   no está en MAPEO_CLIENTES. Nunca se inventa un solicitante ni una lista de precios.
+ * @param {String} eanComprador EAN de la empresa compradora (puede venir vacío).
+ * @param {String} nombreComprador Razón social del comprador, tal como viene en el Excel.
+ * @param {Object} configCli Configuración de CEN (CONFIG.CLIENTES.CEN).
+ * @return {Object|null} { key, nombreDisplay, solicitante, listaPrecios }, o null si el comprador no está en
+ *   MAPEO_CLIENTES. Nunca se inventa un solicitante ni una lista de precios.
  */
 function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli) {
   const mapeo = configCli.MAPEO_CLIENTES || {};
@@ -338,9 +406,17 @@ function cen_identificarClienteInterno_(eanComprador, nombreComprador, configCli
 }
 
 /**
- * Carga el catálogo en dos niveles:
- * 1. catalogoPorTarifa[tarifa][ean] -> Para precios por cliente.
- * 2. catalogoGlobal[ean] -> Red de seguridad para asegurar el Material SAP (hasta 12 dígitos).
+ * Lee la hoja Productos y arma dos catálogos para buscar productos por EAN:
+ *  1. catalogoPorTarifa[tarifa][ean]: material y precio por lista de precios del cliente
+ *     (si un EAN se repite dentro de la misma tarifa, gana la última fila).
+ *  2. catalogoGlobal[ean]: red de seguridad sin importar la tarifa. Si un EAN aparece varias veces, se queda
+ *     con la primera fila, salvo que esa no tenga precio y una posterior sí.
+ * Las columnas se detectan por nombre de encabezado: EAN o BARRA; MATERIAL o SAP; DESCRIPCION, NOMBRE o
+ * PRODUCTO; LISTA o CLIENTE; COSTO, PRECIO o VALOR. Si falta la hoja o las columnas de EAN o Material,
+ * devuelve catálogos vacíos. No escribe ni lanza errores.
+ *
+ * @param {SpreadsheetApp.Sheet|null} shProd Hoja Productos (puede ser null).
+ * @return {Object} { catalogoPorTarifa, catalogoGlobal }.
  */
 function cen_getCatalogoProductosGlobal_(shProd) {
   const catalogoPorTarifa = {};
@@ -393,15 +469,19 @@ function cen_getCatalogoProductosGlobal_(shProd) {
  * como PROVISIONAL: su columna V lleva la marca "PROVISIONAL|<sesión>".
  * - Así, el siguiente cliente con las mismas iniciales continúa el consecutivo.
  * - Las filas solo quedan definitivas (se quita la marca) cuando se genera el CSV unificado.
- * - Si el CSV no se genera, o al empezar un análisis CEN nuevo (por ejemplo tras recargar
- *   la página), las provisionales se borran de CONSOLIDADO.
+ * - Las provisionales se borran de CONSOLIDADO si no se puede guardar el CSV, si falla la confirmación,
+ *   o al empezar un análisis CEN nuevo (de cualquier sesión, por ejemplo tras recargar la página).
+ *   Al confirmar, también se borran las provisionales de la sesión que no están en el paquete.
+ * - Las filas de datos de CONSOLIDADO empiezan en la fila 4 (la 3 son los encabezados).
  * =========================================================================================
  */
 
 const CEN_PROVISIONAL = "PROVISIONAL";
 
 /**
- * Texto que se escribe en la columna V para una orden provisional de una sesión.
+ * Arma el texto que se escribe en la columna V de CONSOLIDADO para una orden provisional de una sesión.
+ * No escribe nada; solo devuelve el texto.
+ *
  * @param {String} sessionId Identificador de la sesión del asistente.
  * @return {String} Por ejemplo "PROVISIONAL|cen-lx2k3-ab12cd".
  */
@@ -410,10 +490,13 @@ function cen_marcaProvisional_(sessionId) {
 }
 
 /**
- * ¿La celda de la columna V contiene una marca provisional?
+ * Indica si el contenido de la columna V es una marca provisional.
+ * Sin sessionId, cuenta cualquier marca PROVISIONAL de cualquier sesión. Con sessionId, solo cuenta la
+ * marca exacta de esa sesión. No escribe ni lanza errores.
+ *
  * @param {*} valor Contenido de la celda.
- * @param {String} [sessionId] Si se indica, solo cuenta la marca de esa sesión.
- * @return {Boolean}
+ * @param {String} [sessionId] Opcional. Si se indica, solo cuenta la marca de esa sesión.
+ * @return {Boolean} true si la celda tiene una marca provisional.
  */
 function cen_esProvisional_(valor, sessionId) {
   const texto = String(valor || "");
@@ -422,15 +505,20 @@ function cen_esProvisional_(valor, sessionId) {
 
 /**
  * CEN_COL_MARCA: columna V de CONSOLIDADO (número base 1) donde va la marca PROVISIONAL.
- * No es una columna con datos ni fórmulas del consolidado, así que no altera nada de lo que ya existe.
+ * Está fuera de los encabezados de CONSOLIDADO (CONSOLIDADO_HEADERS de main.js). Solo guarda la marca
+ * PROVISIONAL; no escribe datos del pedido.
  */
 const CEN_COL_MARCA = 22;
 
 /**
- * Ejecuta una función con el bloqueo de Apps Script, para que dos clics o dos usuarios no
- * escriban en CONSOLIDADO a la vez (dos consecutivos iguales).
- * @param {Function} fn Función a ejecutar.
+ * Ejecuta una función con el bloqueo del script de Apps Script. Así dos clics o dos usuarios no escriben
+ * en CONSOLIDADO al mismo tiempo, lo que daría dos consecutivos iguales.
+ * Espera hasta 30 segundos el bloqueo. Si no lo obtiene, la función no se ejecuta. El bloqueo se libera
+ * siempre al final, aunque fn falle.
+ *
+ * @param {Function} fn Función a ejecutar dentro del bloqueo (sin parámetros).
  * @return {*} Lo que devuelve fn.
+ * @throws Si no se obtiene el bloqueo en 30 segundos, o si fn lanza un error (se pasa tal cual).
  */
 function cen_conBloqueo_(fn) {
   const lock = LockService.getScriptLock();
@@ -443,12 +531,15 @@ function cen_conBloqueo_(fn) {
 }
 
 /**
- * Filas provisionales de una sesión (o de todas las sesiones si no se indica).
- * Las filas de CONSOLIDADO empiezan en la 4 (la 3 son los encabezados).
+ * Busca en CONSOLIDADO las filas que tienen marca provisional en la columna V. Las filas de datos empiezan
+ * en la fila 4 (la 3 son los encabezados). De cada fila lee la OC (columna B) y el Sap Id (columna C).
+ * No escribe nada.
+ *
  * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
- * @param {String} [sessionId]
+ * @param {String} [sessionId] Opcional. Si se omite, lista las provisionales de todas las sesiones.
  * @return {Array<{fila: Number, oc: String, sap: String, combo: String}>}
- *   fila: número de fila en la hoja (base 1). combo: "<OC>_<SAP normalizado>", igual que Combo_Key.
+ *   fila: número de fila en la hoja (base 1). oc y sap: valores limpios. combo: "<OC>_<SAP normalizado>",
+ *   igual que Combo_Key. Lista vacía si no hay filas.
  */
 function cen_listarProvisionales_(sh, sessionId) {
   const ultima = sh.getLastRow();
@@ -466,11 +557,15 @@ function cen_listarProvisionales_(sh, sessionId) {
 }
 
 /**
- * Borra de CONSOLIDADO las filas provisionales de una sesión (o de todas si no se indica).
+ * Borra de CONSOLIDADO las filas provisionales de una sesión (o de todas, si no se indica sesión).
  * Se borra de abajo hacia arriba para que los números de fila no cambien mientras se borra.
- * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
- * @param {String} [sessionId]
+ *
+ * ESCRIBE: borra filas en CONSOLIDADO.
+ *
+ * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO. Si es null, no hace nada.
+ * @param {String} [sessionId] Opcional. Si se omite, borra las de todas las sesiones.
  * @return {Number} Cantidad de filas borradas.
+ * @throws Si Google Sheets falla al borrar alguna fila.
  */
 function cen_borrarProvisionales_(sh, sessionId) {
   if (!sh) return 0;
@@ -483,17 +578,26 @@ function cen_borrarProvisionales_(sh, sessionId) {
 }
 
 /**
- * Registra como PROVISIONALES las órdenes de UN cliente CEN. Lo llama el asistente al pulsar
- * "Guardar ... y pasar al siguiente cliente" (o al último cliente, antes de generar el CSV).
- * El consecutivo se calcula leyendo CONSOLIDADO dentro de un bloqueo, así que cuenta también las
- * provisionales de los clientes anteriores de la misma sesión.
+ * Registra en CONSOLIDADO, como PROVISIONALES, las órdenes de UN cliente CEN. Lo llama el asistente al pulsar
+ * "Guardar ... y pasar al siguiente cliente" (y al último cliente, antes de generar el CSV).
  *
- * @param {String} sessionId Identificador de la sesión del asistente.
- * @param {Object} conf Datos del cliente: { pedidos, items, fechasEntregas }.
- *   - pedidos: pedidos de ese cliente (con Pedido_ID, Cliente_Key, Solicitante_SAP, Id_Destino...).
- *   - items: posiciones de esos pedidos (con Cant y Valor_Unitario).
- *   - fechasEntregas: { <Pedido_ID>: { fecha: "yyyy-MM-dd" } }.
- * @return {Object} { ids: [{ Id, Pedido_ID, Solicitante_SAP }] } consecutivos asignados.
+ * El consecutivo se calcula leyendo CONSOLIDADO dentro del bloqueo, así que cuenta también las provisionales
+ * de los clientes anteriores de la misma sesión. El formato es INICIALES-AA + 4 dígitos, por ejemplo
+ * MC-260001 (AA = últimos dos dígitos del año). Un pedido sin unidades no se registra y no gasta consecutivo.
+ *
+ * ESCRIBE: agrega filas nuevas en CONSOLIDADO (columnas A a K) y pone la marca PROVISIONAL en la columna V
+ * de cada una. No envía correos ni crea CSV.
+ * LEE: CONSOLIDADO y Asignacion_KAM (para las iniciales del KAM, mediante cen_getKamInfo_).
+ *
+ * @param {String} sessionId Identificador de la sesión del asistente. Es obligatorio.
+ * @param {Object} conf Datos del cliente:
+ *   - pedidos: pedidos de ese cliente (Pedido_ID, Cliente_Key, Solicitante_SAP, Cliente_Nombre,
+ *     Fecha_Pedido, Id_Destino, Destinatario, Ciudad).
+ *   - items: posiciones de esos pedidos (Pedido_ID, Cliente_Key, Cant, Valor_Unitario).
+ *   - fechasEntregas: objeto { <Pedido_ID>: { fecha: ... } }. La fecha se copia tal cual. Si falta, la celda queda vacía.
+ * @return {Object} { ids: [{ Id, Pedido_ID, Solicitante_SAP }] }: consecutivos asignados, uno por pedido registrado.
+ * @throws {Error} "Falta el identificador de sesión CEN.", "No se encontró la hoja CONSOLIDADO." o errores de
+ *   Google Sheets o de datos incompletos en conf.
  */
 function cenGuardarProvisional(sessionId, conf) {
   return cen_conBloqueo_(() => {
@@ -502,6 +606,7 @@ function cenGuardarProvisional(sessionId, conf) {
     const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
+    // 1. Preparar: año de dos dígitos, columnas que se escriben (A a K) y mapa de encabezados (fila 3).
     const sufijoAno = String(new Date().getFullYear()).slice(-2);
     // Solo se escriben las columnas A:K. Desde la L en adelante hay fórmulas y formatos condicionales.
     const numCols = 11;
@@ -510,12 +615,14 @@ function cenGuardarProvisional(sessionId, conf) {
     const filas = [];
     const ids = [];
 
+    // 2. Por cada pedido: KAM, consecutivo, unidades y valor, y fila nueva.
     conf.pedidos.forEach(p => {
       const kamInfo = cen_getKamInfo_(p.Solicitante_SAP, p.Cliente_Nombre);
       const prefix = (kamInfo.initials || "MC") + "-" + sufijoAno;
       // Se lee CONSOLIDADO una vez por prefijo; después se cuenta en memoria
       if (maxPorPrefijo[prefix] === undefined) maxPorPrefijo[prefix] = cen_obtenerMaxConsecutivo_(sh, prefix);
 
+      // 3. Sumar unidades y valor de las posiciones del pedido. Sin unidades, no se registra.
       let totalUnidades = 0;
       let totalValor = 0;
       conf.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key).forEach(item => {
@@ -525,6 +632,7 @@ function cenGuardarProvisional(sessionId, conf) {
       });
       if (totalUnidades === 0) return;
 
+      // 4. Siguiente consecutivo del prefijo y armado de la fila.
       maxPorPrefijo[prefix]++;
       const id = prefix + String(maxPorPrefijo[prefix]).padStart(4, "0");
       const fechaEntrega = conf.fechasEntregas[p.Pedido_ID] ? conf.fechasEntregas[p.Pedido_ID].fecha : "";
@@ -545,10 +653,11 @@ function cenGuardarProvisional(sessionId, conf) {
       ids.push({ Id: id, Pedido_ID: p.Pedido_ID, Solicitante_SAP: p.Solicitante_SAP });
     });
 
+    // 5. Escribir las filas nuevas y la marca PROVISIONAL en la columna V.
     if (filas.length > 0) {
       const primera = sh.getLastRow() + 1;
       sh.getRange(primera, 1, filas.length, numCols).setValues(filas);
-      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:N, no toca las fórmulas)
+      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:K, no toca las fórmulas)
       filas.forEach((_, i) => sh.getRange(primera + i, CEN_COL_MARCA).setValue(cen_marcaProvisional_(sessionId)));
       SpreadsheetApp.flush();
     }
@@ -557,16 +666,39 @@ function cenGuardarProvisional(sessionId, conf) {
 }
 
 /**
- * Genera el CSV SAP unificado de todos los clientes de la sesión y confirma sus órdenes provisionales.
- * Orden de los pasos:
- *   1. CSV en Drive. Si falla, se borran las provisionales y no queda nada registrado.
- *   2. Las provisionales de la sesión pasan a definitivas (se quita la marca).
- *   3. Se mueven los Excel terminados a Procesados.
- *   4. Se envían los correos a las KAM, solo por las órdenes definitivas.
+ * Confirma el lote CEN de todos los clientes de la sesión. Es el paso final: genera el CSV unificado para SAP,
+ * confirma las órdenes provisionales y envía los correos a las KAM.
  *
- * @param {Object} paquete Incluye sessionId, pedidos, items, fechasEntregas, materialesSeleccionados,
- *   noActualizadosSeleccionados, backordersSeleccionados, estadoArchivos y notificarKAM.
- * @return {Object} { success, mensaje, csvData, fileName }
+ * Orden de los pasos:
+ *  1. Se guarda el CSV en Drive. Si falla, las provisionales se borran y no queda nada registrado.
+ *  2. Las provisionales de la sesión pasan a definitivas (se quita la marca de la columna V) y se
+ *     borran las que sobran.
+ *  3. Los Excel completos se mueven a la carpeta de procesados y se renombran. Un Excel con alguna OC
+ *     sin registrar, o con un comprador sin homologar, se deja en la carpeta de entrada.
+ *  4. Se envían los correos a las KAM, solo por las órdenes confirmadas.
+ *
+ * Reglas del CSV: un pedido sin unidades no entra. Una línea sin Material SAP válido (vacío, con "SIN_",
+ * igual al EAN, o un EAN de 13 dígitos que empieza por 84) va con material vacío, que SAP trata como back order.
+ *
+ * ESCRIBE: CSV en CONFIG.FOLDER_CSV_ID; CONSOLIDADO (quita marcas o borra filas provisionales); mueve y
+ * renombra Excel en la carpeta de procesados; envía correos a las KAM.
+ *
+ * @param {Object} paquete Todo lo que arma el asistente:
+ *   - sessionId: identificador de la sesión (obligatorio).
+ *   - pedidos: pedidos de todos los clientes (Cliente_Key, Pedido_ID, Combo_Key, Solicitante_SAP,
+ *     Id_Destino, Archivo_Id, Archivo_Nombre, Fecha_Pedido, Cliente_Nombre).
+ *   - items: posiciones (Item_ID, Pedido_ID, Cliente_Key, Producto_Cod, Descripcion, Cant, Valor_Unitario).
+ *   - fechasEntregas: fecha de entrega por Pedido_ID.
+ *   - materialesSeleccionados: { Item_ID: Material SAP elegido }.
+ *   - noActualizadosSeleccionados: { Item_ID: true } marca líneas sin cruce de EAN.
+ *   - backordersSeleccionados: { Item_ID: true } marca líneas en back order (para el correo).
+ *   - estadoArchivos: estado de cada Excel devuelto por preAnalizarCEN.
+ *   - notificarKAM: si es false, no se envían correos (por defecto sí se envían).
+ * @return {Object} { success: true, mensaje, csvData (CSV en base64, sin saltos de línea), fileName }.
+ *   fileName tiene la forma Pedido_CEN_AAAAMMDD.csv (con el prefijo de prueba si aplica).
+ * @throws {Error} Si falta sessionId, si no existe CONSOLIDADO, si no hay provisionales de la sesión para
+ *   confirmar, si el CSV no se puede guardar, o si falla la confirmación en CONSOLIDADO. Los errores de
+ *   correo NO detienen el proceso: se registran en el log.
  */
 function guardarDefinitivoCEN(paquete) {
   try {
@@ -577,6 +709,7 @@ function guardarDefinitivoCEN(paquete) {
       const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
       if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
+      // Preparación: líneas del CSV por pedido y lista de notificaciones por cliente.
       const pedidosCsv = [];
       const notificaciones = [];
       const combosPaquete = new Set();
@@ -715,6 +848,7 @@ function guardarDefinitivoCEN(paquete) {
         });
       }
 
+      // Mensaje que verá el asistente.
       let mensaje = `Se confirmaron ${aConfirmar.length} órdenes de compra de CEN.`;
       if (archivosRetenidos.length > 0) {
         mensaje += ` ${archivosRetenidos.length} archivo(s) se dejaron en la carpeta de entrada porque aún tienen órdenes sin registrar: ${archivosRetenidos.join(", ")}.`;
@@ -732,6 +866,18 @@ function guardarDefinitivoCEN(paquete) {
   }
 }
 
+/**
+ * Convierte un Excel (.xls, .xlsx o .xlsm) en una hoja de Google Sheets temporal, guardada en la misma carpeta
+ * del Excel, para poder leerla. La conversión usa el servicio avanzado de Drive (Drive.Files.insert), que
+ * debe estar activado en el proyecto.
+ *
+ * ESCRIBE: crea un archivo temporal en Drive con nombre "<nombre del Excel>_TEMP". Quien lo llama es
+ * responsable de borrarlo.
+ *
+ * @param {DriveApp.File} file Excel de CEN a convertir.
+ * @return {String} Id del archivo temporal creado.
+ * @throws Si Drive no puede convertir el archivo, o si el servicio avanzado de Drive no está activo.
+ */
 function cen_convertirExcelASheet_(file) {
   const resource = {
     title: file.getName().replace(/\.[^/.]+$/, "") + "_TEMP",
@@ -742,6 +888,15 @@ function cen_convertirExcelASheet_(file) {
   return tempFile.id;
 }
 
+/**
+ * Limpia un código EAN (código de barras del producto o de la empresa). Deja solo dígitos, con máximo 13.
+ * Quita espacios, la parte decimal y la notación científica (4.5E+12 se convierte en número entero).
+ * Un código de más de 13 dígitos se recorta a sus primeros 13.
+ * No escribe ni lanza errores.
+ *
+ * @param {*} val Valor de la celda.
+ * @return {String} EAN limpio, o "" si estaba vacío.
+ */
 function cen_limpiarEan_(val) {
   if (!val) return "";
   let s = String(val).trim();
@@ -755,16 +910,40 @@ function cen_limpiarEan_(val) {
   return s;
 }
 
+/**
+ * Convierte una fecha a texto dd/MM/yyyy (formato de CONSOLIDADO). Si el valor es una fecha, la formatea con la
+ * zona horaria del script. Si es texto, solo quita los espacios de los extremos. No escribe ni lanza errores.
+ *
+ * @param {*} val Fecha (objeto Date) o texto.
+ * @return {String} Fecha en texto.
+ */
 function cen_formatFechaStr_(val) {
   if (val instanceof Date) return Utilities.formatDate(val, Session.getScriptTimeZone(), "dd/MM/yyyy");
   return String(val).trim();
 }
 
+/**
+ * Prepara un texto para compararlo: quita tildes, espacios, puntos, guiones y otros símbolos, y lo pasa a
+ * mayúsculas. Por ejemplo "Razón Social" queda "RAZONSOCIAL". Así "SAP ID", "sap-id" y "Sap Id" se
+ * consideran iguales al buscar columnas o clientes. No escribe ni lanza errores.
+ *
+ * @param {*} text Texto a preparar.
+ * @return {String} Texto normalizado, o "" si estaba vacío.
+ */
 function cen_normalizeKey_(text) {
   if (!text) return "";
   return String(text).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase().trim();
 }
 
+/**
+ * Busca en la columna A de CONSOLIDADO el consecutivo más alto que ya usa un prefijo (por ejemplo "MC-26").
+ * El siguiente número se calcula sumando uno a ese máximo. Revisa las filas desde la 2. Los IDs que no
+ * empiezan por el prefijo se ignoran. No escribe ni lanza errores.
+ *
+ * @param {SpreadsheetApp.Sheet} shConsolidado Hoja CONSOLIDADO.
+ * @param {String} prefix Prefijo, por ejemplo "MC-26".
+ * @return {Number} Consecutivo más alto encontrado; 0 si no hay ninguno.
+ */
 function cen_obtenerMaxConsecutivo_(shConsolidado, prefix) {
   let max = 0;
   const data = shConsolidado.getDataRange().getValues();
@@ -779,16 +958,21 @@ function cen_obtenerMaxConsecutivo_(shConsolidado, prefix) {
 }
 
 /**
- * Consulta la información del KAM asignado con DOBLE CAPA de resolución:
- * Capa 1: Invoca la función centralizada obtenerInfoKamPorSolicitante_() de main.gs.
- * Capa 2: Si no existe o falla, busca de forma autónoma en la pestaña Asignacion_KAM.
- * 
- * @param {String|Number} solicitanteSap ID de SAP del cliente.
- * @param {String} [clienteNombre] Nombre display del cliente para búsqueda por alias.
- * @return {Object} Objeto garantizado con { name, initials, email }.
+ * Consulta el KAM (ejecutivo de cuenta) asignado a un cliente. Usa tres niveles para que el correo casi nunca
+ * quede vacío:
+ *  - Capa 1: obtenerInfoKamPorSolicitante_ (main.js), por Solicitante SAP.
+ *  - Capa 2: búsqueda directa en la hoja Asignacion_KAM, por Solicitante SAP o, si no coincide, por nombre
+ *    del cliente (coincidencia parcial).
+ *  - Capa 3: valores por defecto (KAM ISDIN, iniciales MC, correo vacío). Con correo vacío no se envía
+ *    el correo al KAM.
+ * No escribe. Los fallos de las capas 1 y 2 se registran en el log (console.warn) y se pasa a la siguiente capa.
+ *
+ * @param {String|Number} solicitanteSap ID de SAP del cliente (Solicitante).
+ * @param {String} [clienteNombre] Nombre del cliente, para buscar por nombre si el SAP no coincide.
+ * @return {Object} { name, initials, email }: nombre del KAM, iniciales (para el consecutivo) y correo (puede ser "").
  */
 function cen_getKamInfo_(solicitanteSap, clienteNombre) {
-  // Capa 1: Consumo de main.gs
+  // Capa 1: Consumo de main.js
   if (typeof obtenerInfoKamPorSolicitante_ === "function") {
     try {
       const infoKam = obtenerInfoKamPorSolicitante_(solicitanteSap);
@@ -852,7 +1036,27 @@ function cen_getKamInfo_(solicitanteSap, clienteNombre) {
   };
 }
 
+/**
+ * Arma el correo HTML con el resumen de las órdenes confirmadas de un cliente y lo envía a la KAM mediante
+ * enviarCorreoKam_ (main.js). Por cada OC muestra:
+ *  - productos OK y en back order, con su Material SAP, cantidad y subtotal;
+ *  - productos sin Material válido ("EANs no actualizados"), en un bloque de alerta;
+ *  - valor estimado OK y valor en back order.
+ * Asunto: "Resumen Pedidos CEN (<cliente>) - <fecha>".
+ *
+ * ESCRIBE: envía un correo (MailApp, vía enviarCorreoKam_). En modo PRUEBA el destino lo decide
+ * enviarCorreoKam_. No escribe en hojas.
+ *
+ * @param {Array<Object>} pedidosCli Pedidos del cliente que sí quedaron registrados.
+ * @param {Object} paquete Paquete completo del asistente (items, materialesSeleccionados,
+ *   noActualizadosSeleccionados, backordersSeleccionados).
+ * @param {Object} kamInfo { name, initials, email } devuelto por cen_getKamInfo_.
+ * @param {String} clienteNombre Nombre del cliente que aparece en el correo.
+ * @return {void}
+ * @throws Si MailApp no puede enviar el correo. guardarDefinitivoCEN captura el error y lo registra en el log.
+ */
 function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
+  // 1. Encabezado del correo.
   let htmlBody = `
     <div style="font-family: 'Inter', sans-serif; color: #2B2830; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E5E7EB; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
       <div style="text-align: center; border-bottom: 2px solid #E41F33; padding-bottom: 15px; margin-bottom: 20px;">
@@ -867,6 +1071,7 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
       <div style="margin-top: 15px;">
   `;
 
+  // 2. Un bloque por OC: separar posiciones OK, back order y sin material, y calcular valores.
   pedidosCli.forEach(p => {
     const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
     let itemsNoActualizados = [];
@@ -992,12 +1197,14 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
     `;
   });
 
+  // 3. Cerrar el HTML.
   htmlBody += `
       </div>
       <p style="font-size: 13px; color: #9CA3AF; margin-top: 25px; border-top: 1px solid #F3F4F6; padding-top: 15px; text-align: center;">Este es un correo automático generado por el Order Hub de ISDIN Colombia. Por favor no responder a este mensaje.</p>
     </div>
   `;
 
+  // 4. Enviar el correo a la KAM.
   enviarCorreoKam_({
     to: kamInfo.email,
     subject: `📦 Resumen Pedidos CEN (${clienteNombre}) - ${Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy")}`,

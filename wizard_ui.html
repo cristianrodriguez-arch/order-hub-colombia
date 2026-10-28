@@ -12,6 +12,7 @@
   </div>
 
   <!-- 1. PANTALLA DE INICIO DE PROCESAMIENTO -->
+  <!-- Que ve el usuario: la pantalla de inicio del cliente, con su titulo y el boton para buscar las ordenes nuevas. -->
   <div id="wizard-start-step" class="text-center py-12 bg-isdin-white rounded-xl shadow-sm border border-gray-200 p-6">
     <div class="mb-8 flex justify-center">
       <div class="flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 border-4 border-blue-100 text-blue-600 shadow-inner">
@@ -26,6 +27,7 @@
   </div>
 
   <!-- 2. PANTALLA DE CARGA (SPINNER) -->
+  <!-- Que ve el usuario: un indicador de carga mientras el sistema lee los archivos. El texto cambia segun el cliente. -->
   <div id="wizard-loading" class="flex flex-col items-center justify-center py-16 text-center hidden">
     <svg id="wizard-spinner" class="animate-spin h-10 w-10 text-isdin-red mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -36,6 +38,8 @@
   </div>
 
   <!-- 3. SELECTOR INICIAL MULTICLIENTE (CEN) -->
+  <!-- Que ve el usuario (solo CEN): la lista de clientes del consolidado, con cuantas ordenes tiene cada uno y cuales ya quedaron configurados.
+       La barra inferior aparece cuando hay clientes listos y permite generar el CSV solo con esos clientes. -->
   <div id="wizard-seccion-clientes-cen" class="hidden fade-in mb-8 bg-white rounded-xl p-6 border border-gray-200 shadow-sm text-center">
     <h2 class="text-2xl font-extrabold text-isdin-black mb-2">Seleccione el cliente a tramitar</h2>
     <p class="text-gray-500 text-sm mb-6 max-w-md mx-auto">Configure las órdenes de cada cliente. Al finalizar todos los clientes, se generará <b>un único archivo CSV consolidado</b> para SAP.</p>
@@ -68,6 +72,8 @@
   </div>
 
   <!-- 4. CONTENEDOR DEL FLUJO PRINCIPAL DE VALIDACIÓN -->
+  <!-- Que ve el usuario: el trabajo de revision del cliente actual. Aparecen solo los pasos que aplican: referencias sin EAN (si hay),
+       fechas de entrega, productos con stock OK, productos en back order y, al final, el boton para guardar. -->
   <div id="wizard-flow-container" class="hidden fade-in pb-10">
 
     <!-- Validación de EANs Faltantes -->
@@ -118,6 +124,8 @@
     </div>
 
     <!-- 5. PANTALLA DE ÉXITO Y RESUMEN DETALLADO -->
+    <!-- Que ve el usuario: el mensaje de proceso completado y el resumen de cada orden de compra, con lo facturado,
+         lo retenido por back order y las referencias no actualizadas. -->
     <div id="wizard-seccion-descarga" class="hidden text-center py-12 fade-in">
       <div class="bg-green-100 text-green-600 p-5 rounded-full inline-flex mb-5">
         <svg class="w-14 h-14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
@@ -140,6 +148,28 @@
 </div>
 
 <script>
+/*
+ * ASISTENTE DE INTEGRACION DE ORDENES (wizard_ui.html)
+ * Es la pantalla con la que el usuario tramita las ordenes de compra (OC) de cada cliente:
+ * lee los archivos desde Drive, pide la fecha de entrega, asigna el Material SAP y el lote
+ * (stock OK o back order), y guarda el CSV para SAP en Drive.
+ *
+ * Flujos por cliente (la clave viene de CLIENTES_UI):
+ *  - MEDIPIEL: lee las ordenes en PDF desde Drive y guarda directamente.
+ *  - CMX: lee los Excel (.xlsm). Si una orden no tiene destino reconocido, pide el ID de destino
+ *    antes de seguir. Guarda directamente.
+ *  - CEN: lee los Excel consolidados del portal. Muestra una lista de clientes. Cada cliente se
+ *    configura por separado y se registra de forma provisional. Al final se genera un unico CSV
+ *    con todos los clientes configurados.
+ *
+ * Convenciones:
+ *  - Las funciones que empiezan con "wizard" son del asistente.
+ *  - google.script.run llama a funciones del servidor de Apps Script (main.js, medipiel_motor.js,
+ *    cmx_motor.js, cen_motor.js). withSuccessHandler recibe la respuesta del servidor y
+ *    withFailureHandler recibe el error.
+ *  - wizardState guarda todo el estado del asistente mientras la pagina esta abierta. Al recargar
+ *    la pagina se pierde.
+ */
   const CLIENTES_UI = {
     MEDIPIEL: {
       titulo: 'Pedidos MEDIPIEL',
@@ -212,6 +242,12 @@
     catalogoError: null
   };
 
+  /**
+   * Arranca el asistente para un cliente. Toma sus textos y colores de CLIENTES_UI, crea un estado nuevo
+   * en wizardState (con un identificador de sesion para CEN) y muestra la pantalla de inicio. No consulta el servidor.
+   * @param {String} cliente Clave del cliente: "MEDIPIEL", "CMX" o "CEN". Si no existe, muestra un error y vuelve al inicio del dashboard.
+   * En pantalla: aparecen el titulo del modulo y el boton de inicio con el color del cliente.
+   */
   function wizardInit(cliente) {
     const config = CLIENTES_UI[cliente];
     if (!config) {
@@ -253,6 +289,11 @@
     document.getElementById('wizard-start-step').classList.remove('hidden');
   }
 
+  /**
+   * Oculta todas las pantallas del asistente y vacia sus listas (EANs faltantes, fechas, stock OK, back order, resumen).
+   * Se usa antes de empezar un flujo nuevo y al pasar de un cliente CEN al siguiente.
+   * No recibe parametros ni devuelve nada. No consulta el servidor.
+   */
   function wizardResetFlujo() {
     const secciones = [
       'wizard-start-step', 'wizard-loading', 'wizard-seccion-clientes-cen', 'wizard-banner-cliente-actual',
@@ -273,6 +314,13 @@
     document.getElementById('wizard-resumen-texto').innerHTML = '';
   }
 
+  /**
+   * Se ejecuta al pulsar el boton de inicio. Muestra el spinner y pide al servidor:
+   * 1) obtenerCatalogoMaterialesSap, en paralelo, para validar los materiales digitados a mano. Si falla, se guarda el error en wizardState.catalogoError.
+   * 2) La funcion de pre-analisis del cliente (cfg.fnPreAnalizar). Su respuesta va a wizardProcesarRespuesta.
+   * Si el pre-analisis falla, muestra el error (con el prefijo del cliente) y vuelve al inicio del dashboard.
+   * No recibe parametros ni devuelve nada.
+   */
   function wizardIniciarFlujo() {
     const cfg = wizardState.config;
     document.getElementById('wizard-start-step').classList.add('hidden');
@@ -294,6 +342,18 @@
       })[cfg.fnPreAnalizar]();
   }
 
+  /**
+   * Recibe el resultado del pre-analisis y decide que mostrar a continuacion.
+   * @param {Object} respuesta Resultado del servidor: pedidosExtraidos, itemsExtraidos, errores, yaProcesados, clientesDetectados y estadoArchivos.
+   * En pantalla, segun el caso:
+   * - Sin ordenes y con errores de lectura: alerta roja con las causas y vuelve al dashboard.
+   * - Sin ordenes nuevas: alerta informativa (con la lista de OC ya registradas si las hay) y vuelve al dashboard.
+   * - Con ordenes y algunos errores: aviso amarillo, y el asistente sigue.
+   * - CEN con clientes detectados: abre la lista de clientes.
+   * - CMX con destinos no reconocidos: pide el ID de destino de cada orden antes de seguir.
+   * - Resto: abre la revision principal.
+   * No devuelve valor.
+   */
   function wizardProcesarRespuesta(respuesta) {
     const cfg = wizardState.config;
     document.getElementById('wizard-loading').classList.add('hidden');
@@ -357,6 +417,11 @@
     }
   }
 
+  /**
+   * Guarda la respuesta como la orden que se esta tramitando, muestra el contenedor del flujo y revisa si faltan EANs.
+   * @param {Object} respuesta Pedidos e items del cliente actual (en CEN, solo los del cliente seleccionado).
+   * No devuelve valor. No consulta el servidor.
+   */
   function wizardMostrarRevisionPrincipal(respuesta) {
     wizardState.payloadActual = respuesta;
     document.getElementById('wizard-flow-container').classList.remove('hidden');
@@ -414,6 +479,11 @@
     });
   }
 
+  /**
+   * Dibuja la lista de clientes CEN pendientes como tarjetas. Cada tarjeta muestra cuantas OC tiene el cliente
+   * o, si ya quedo configurado, la marca "Listo". La barra "Generar CSV Unificado" aparece si hay al menos un cliente listo.
+   * No recibe parametros ni devuelve nada. Solo cambia pantallas; no consulta el servidor.
+   */
   function wizardRenderSelectorClientesCen() {
     document.getElementById('wizard-seccion-clientes-cen').classList.remove('hidden');
     document.getElementById('wizard-banner-cliente-actual').classList.add('hidden');
@@ -450,6 +520,11 @@
     }
   }
 
+  /**
+   * Boton "Clientes" del banner: vuelve a la lista de clientes CEN sin perder lo ya configurado.
+   * Oculta el flujo de revision y vuelve a dibujar la lista (wizardRenderSelectorClientesCen).
+   * No recibe parametros ni devuelve nada.
+   */
   function wizardVolverASelectorCen() {
     ['wizard-seccion-revision', 'wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-flow-container'].forEach(id => {
       const el = document.getElementById(id);
@@ -458,6 +533,12 @@
     wizardRenderSelectorClientesCen();
   }
 
+  /**
+   * Abre un cliente CEN de la lista. Filtra de la respuesta solo sus ordenes e items (por Cliente_Key), los deja como
+   * orden actual, muestra el banner con su nombre y el contador "X de Y listos", y comienza la revision.
+   * @param {String} cliKey Clave del cliente CEN (campo key de clientesCenPendientes).
+   * No devuelve valor. No consulta el servidor.
+   */
   function wizardSeleccionarClienteCen(cliKey) {
     wizardState.clienteCenSeleccionado = cliKey;
     document.getElementById('wizard-seccion-clientes-cen').classList.add('hidden');
@@ -483,6 +564,12 @@
     wizardCheckEansFaltantes();
   }
 
+  /**
+   * Revisa si hay referencias sin EAN mapeado o sin material valido, y las agrupa por codigo de producto (sumando cantidades).
+   * Si hay referencias faltantes: muestra la seccion roja con un campo por referencia para digitar el Material SAP (o dejarlo vacio).
+   * Si no hay ninguna: pasa directo a wizardRenderEtapaPrincipal.
+   * No recibe parametros ni devuelve nada. No consulta el servidor.
+   */
   function wizardCheckEansFaltantes() {
     const eansUnicos = {};
 
@@ -519,6 +606,13 @@
     }
   }
 
+  /**
+   * Boton "Registrar y continuar" de la seccion roja. Valida los materiales digitados con wizardValidarInputsMaterial.
+   * Si hay errores, los muestra en una alerta y se detiene. Si todo esta bien, asigna a cada referencia el material digitado
+   * (con su stock real de Bodega), o la marca como NO ACTUALIZADO si el campo quedo vacio. Luego oculta la seccion roja
+   * y dibuja la etapa principal.
+   * No recibe parametros ni devuelve nada. No consulta el servidor: el catalogo ya esta en memoria.
+   */
   function wizardContinuarEan() {
     try {
       const inputs = document.querySelectorAll('[id^="wizard_ean_"]');
@@ -637,7 +731,11 @@
     return Math.max(0, stock - reservado);
   }
 
-  /** Lote que se propone por defecto: el primero con stock suficiente o, si no hay, el primero. */
+  /**
+   * Lote que se propone por defecto en el desplegable: el primero que cubre la cantidad completa o, si ninguno la cubre, el de mayor stock.
+   * @param {Object} grp Producto agrupado, con Materiales_Disponibles y CantTotal.
+   * @return {Number} Posicion (indice) del lote a preseleccionar.
+   */
   function wizardIndiceMejorMaterial(grp) {
     // 1. El primer lote que cubre la cantidad completa
     const idx = grp.Materiales_Disponibles.findIndex(m => m.stock >= grp.CantTotal);
@@ -700,7 +798,11 @@
     return lote ? { material: lote.material || "", stock: Number(lote.stock) || 0 } : { material: "", stock: 0 };
   }
 
-  /** Campos manuales que están activos (su desplegable está en "Digitar otro Material SAP manual"). */
+  /**
+   * Campos de material manual que estan activos, es decir, cuyo desplegable esta en "Digitar otro Material SAP manual".
+   * Se usa para validar solo lo que el usuario digito y va a usarse.
+   * @return {Array} Elementos input activos.
+   */
   function wizardInputsManualActivos() {
     return Array.from(document.querySelectorAll('[id^="wizard_override_mat_"]')).filter(input => {
       const sel = document.getElementById(`wizard_mat_${input.id.replace("wizard_override_mat_", "")}`);
@@ -708,6 +810,17 @@
     });
   }
 
+  /**
+   * Construye la etapa principal del cliente actual: marca lo que no sirve, agrupa por producto y dibuja los pasos.
+   * Orden de trabajo:
+   * 1) Marca como NO ACTUALIZADO las posiciones sin EAN mapeado o sin material valido.
+   * 2) Agrupa las posiciones por codigo de producto y suma las cantidades.
+   * 3) En CEN, descuenta el stock ya asignado a otros clientes (wizardReservasOtrosClientesCen).
+   * 4) Paso 1: fecha de entrega por orden (por defecto, 7 dias desde hoy).
+   * 5) Paso 2 (stock OK) o Paso 3 (back order), segun el stock total de cada producto. El numero del paso se asigna solo a los pasos que aparecen.
+   * 6) Escribe el resumen y el texto del boton principal. En CEN, el texto cambia segun queden clientes por configurar.
+   * No recibe parametros ni devuelve nada. Escribe en pantalla; no consulta el servidor.
+   */
   function wizardRenderEtapaPrincipal() {
     wizardState.payloadActual.itemsExtraidos.forEach(item => {
       // VALIDACIÓN FLEXIBLE DE MATERIAL SAP: Permite códigos de hasta 12 dígitos oficiales (ej: 690033624480)
@@ -865,6 +978,13 @@
     }
   }
 
+  /**
+   * Al cambiar el desplegable de Material SAP: si se eligio "Digitar otro", muestra el campo manual y le pone el foco.
+   * Si se eligio otro valor, oculta el campo manual y lo vacia.
+   * @param {String} cod Codigo de producto (EAN) de la referencia.
+   * @param {String} selValue Valor elegido en el desplegable.
+   * No devuelve valor. Solo cambia pantalla.
+   */
   function wizardToggleManualInputMulti(cod, selValue) {
     const container = document.getElementById(`container_manual_multi_${cod}`);
     if (container) {
@@ -880,6 +1000,13 @@
     }
   }
 
+  /**
+   * Accion del boton principal del paso final (Generar CSV SAP, Guardar y pasar al siguiente cliente, o Generar CSV unificado).
+   * Primero valida los materiales digitados a mano que estan activos. Si hay errores, los muestra y se detiene.
+   * Si el cliente es CEN, guarda la configuracion del cliente actual (wizardGuardarConfiguracionClienteCenActual).
+   * Si no, guarda todo y genera el CSV (wizardGuardarTodo).
+   * No recibe parametros ni devuelve nada.
+   */
   function wizardAvanzarOGuardar() {
     const erroresMat = wizardValidarInputsMaterial(wizardInputsManualActivos());
     if (erroresMat.length > 0) {
@@ -894,6 +1021,13 @@
     }
   }
 
+  /**
+   * Guarda en memoria la configuracion del cliente CEN actual: fechas, Material SAP elegido, back order y
+   * no actualizados por posicion. Luego registra un provisional en el servidor (cenGuardarProvisional), con el identificador de la sesion.
+   * Si el registro funciona: pasa al siguiente cliente o, si no quedan, genera el CSV unificado (wizardContinuarTrasGuardarClienteCen).
+   * Si falla: el cliente deja de contar como listo y se muestra el error. El usuario se queda en la misma pantalla.
+   * No recibe parametros ni devuelve nada.
+   */
   function wizardGuardarConfiguracionClienteCenActual() {
     const cliKey = wizardState.clienteCenSeleccionado;
     const cliObj = wizardState.clientesCenPendientes.find(c => c.key === cliKey);
@@ -983,6 +1117,14 @@
     }
   }
 
+  /**
+   * Genera el CSV unificado de CEN con los clientes ya configurados. Se llama desde la barra de clientes
+   * o al terminar el ultimo cliente. El cliente que esta a medias no se incluye.
+   * Si no hay clientes configurados, muestra un error. Si los hay, junta en un solo paquete las ordenes, items, fechas,
+   * materiales, back order y no actualizados de todos, con el identificador de sesion, el checkbox de notificar a la KAM
+   * y el estado de cada archivo Excel (estadoArchivos). Luego lo envia (wizardEjecutarGuardadoBackend).
+   * No recibe parametros ni devuelve nada.
+   */
   function wizardEjecutarConsolidacionFinalCen() {
     const listosKeys = Object.keys(wizardState.clientesCenConfigurados);
     if (listosKeys.length === 0) {
@@ -1026,6 +1168,11 @@
     wizardEjecutarGuardadoBackend(paqueteConsolidadoCen);
   }
 
+  /**
+   * Guardado para los clientes que no son CEN (MEDIPIEL y CMX). Arma el paquete final con fechas, materiales,
+   * back order y no actualizados, lo guarda en wizardState.materialesPreseleccionados y lo envia (wizardEjecutarGuardadoBackend).
+   * No recibe parametros ni devuelve nada.
+   */
   function wizardGuardarTodo() {
     const fechasEntregas = {};
     wizardState.payloadActual.pedidosExtraidos.forEach(p => {
@@ -1077,6 +1224,15 @@
     wizardEjecutarGuardadoBackend(paqueteFinal);
   }
 
+  /**
+   * Envia el paquete al servidor para guardar y generar el CSV. La funcion del servidor depende del cliente (cfg.fnGuardar):
+   * guardarDefinitivoMEDIPIEL, guardarDefinitivoCMX o guardarDefinitivoCEN.
+   * @param {Object} paqueteFinal Pedidos, items, fechas, materiales, back order, no actualizados y notificarKAM.
+   * En pantalla: oculta las secciones de trabajo y muestra el spinner con el texto de guardado.
+   * Si todo sale bien: guarda el paquete en paquetesProcesados, muestra el resumen final y una alerta con el mensaje del servidor (si lo hay).
+   * Si falla: muestra el error y vuelve al dashboard.
+   * No devuelve valor.
+   */
   function wizardEjecutarGuardadoBackend(paqueteFinal) {
     const cfg = wizardState.config;
     ['wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-banner-cliente-actual', 'wizard-seccion-clientes-cen'].forEach(id => {
@@ -1111,6 +1267,12 @@
       })[cfg.fnGuardar](paqueteFinal);
   }
 
+  /**
+   * Arma el resumen final por orden de compra con todos los paquetes guardados en esta sesion.
+   * Por cada posicion: OK, back order o no actualizada. Suma lo facturado (OK) y lo retenido (back order) por orden.
+   * Cada OC queda marcada como "Referencias No Actualizadas" (si tiene alguna), "Contiene Back Orders" o "Completada con Exito".
+   * No recibe parametros. Escribe el HTML en wizard-detalle-resumen y muestra el contenedor. No consulta el servidor.
+   */
   function wizardGenerarResumenAcumuladoOC() {
     const resumen = {};
 
@@ -1164,6 +1326,7 @@
       });
     });
 
+    // Da formato de pesos colombianos (por ejemplo $1.250.000). Si el valor no es numero, muestra $0.
     const formatCOP = (num) => {
       let val = Number(num);
       if (isNaN(val)) return '$0';
