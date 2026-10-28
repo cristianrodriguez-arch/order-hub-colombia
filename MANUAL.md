@@ -79,7 +79,7 @@ En `main.js` cada parte está marcada con comentarios. Busca las palabras **FORM
 1. Al abrir CEN se analizan los Excel de la carpeta. Antes se borran las provisionales que
    quedaron de una sesión anterior.
 2. Por cada cliente, al pulsar **"Guardar … y pasar al siguiente cliente"**, sus órdenes se
-   escriben en `CONSOLIDADO` con la marca **PROVISIONAL** en la columna *Observaciones*. Así el
+   escriben en `CONSOLIDADO` con la marca **PROVISIONAL** en la columna **V**. Así el
    siguiente cliente con las mismas iniciales continúa el consecutivo y no repite el número.
 3. Al pulsar **"Generar CSV SAP unificado"**: se guarda el CSV, se quita la marca a las órdenes
    (quedan definitivas), se mueven los Excel terminados y se envían los correos.
@@ -233,9 +233,9 @@ En el asistente de MEDIPIEL, con un producto que tenga stock:
 
 ### Prueba D — Consecutivos de CEN con las mismas iniciales
 Con dos clientes CEN de las mismas iniciales en el mismo Excel (en la copia, Cafam y Comfandi):
-- [ ] Al guardar el primero, en CONSOLIDADO aparece su fila con la marca `PROVISIONAL` en *Observaciones*.
+- [ ] Al guardar el primero, en CONSOLIDADO aparece su fila con la marca `PROVISIONAL` en la columna **V**.
 - [ ] El segundo cliente recibe el consecutivo siguiente, sin repetir el número.
-- [ ] Al generar el CSV unificado, la columna *Observaciones* queda vacía en esas filas.
+- [ ] Al generar el CSV unificado, la columna **V** queda vacía en esas filas.
 - [ ] Si recargas la página antes del CSV, al volver a abrir CEN las filas provisionales desaparecen.
 
 ### Prueba C — Renombrado y registro
