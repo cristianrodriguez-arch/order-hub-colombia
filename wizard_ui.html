@@ -123,11 +123,7 @@
         <svg class="w-14 h-14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
       </div>
       <h2 id="wizard-titulo-exito" class="text-3xl font-bold text-isdin-black mb-3">¡Proceso Completado!</h2>
-      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente.</p>
-      <button id="wizard-btn-descargar-csv" class="bg-isdin-black hover:bg-gray-800 text-white font-bold py-4 px-10 rounded-lg transition duration-200 shadow-lg inline-flex items-center gap-3 mx-auto mt-2 cursor-pointer">
-        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-        Descargar Archivo CSV
-      </button>
+      <p class="text-gray-500 text-sm mb-4">Todas las órdenes de compra han sido procesadas exitosamente. El archivo CSV quedó guardado en la carpeta de Drive para carga a SAP.</p>
 
       <div id="wizard-contenedor-resumen" class="mt-8 max-w-2xl mx-auto text-left bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
         <div class="w-full px-5 py-4 flex items-center bg-gray-50 border-b border-gray-200">
@@ -275,7 +271,6 @@
       if (el) el.innerHTML = '';
     });
     document.getElementById('wizard-resumen-texto').innerHTML = '';
-    document.getElementById('wizard-btn-descargar-csv').onclick = null;
   }
 
   function wizardIniciarFlujo() {
@@ -1082,28 +1077,6 @@
     wizardEjecutarGuardadoBackend(paqueteFinal);
   }
 
-  /**
-   * Descarga en el navegador el CSV que devuelve el backend (contenido en Base64 UTF-8).
-   */
-  function descargarArchivoCSV(base64, fileName) {
-    if (!base64) {
-      mostrarError("No se recibió el contenido del CSV para descargar. El archivo quedó guardado en Drive.");
-      return;
-    }
-    const binario = atob(base64);
-    const bytes = new Uint8Array(binario.length);
-    for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
-
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'text/csv;charset=utf-8' }));
-    const enlace = document.createElement('a');
-    enlace.href = url;
-    enlace.download = fileName || 'Pedido_SAP.csv';
-    document.body.appendChild(enlace);
-    enlace.click();
-    document.body.removeChild(enlace);
-    URL.revokeObjectURL(url);
-  }
-
   function wizardEjecutarGuardadoBackend(paqueteFinal) {
     const cfg = wizardState.config;
     ['wizard-seccion-fechas', 'wizard-seccion-auto', 'wizard-seccion-materiales', 'wizard-seccion-guardar', 'wizard-banner-cliente-actual', 'wizard-seccion-clientes-cen'].forEach(id => {
@@ -1120,11 +1093,6 @@
         wizardState.paquetesProcesados.push({ paquete: paqueteFinal, respuesta: respuestaObj });
 
         document.getElementById('wizard-seccion-descarga').classList.remove('hidden');
-
-        const btnDescarga = document.getElementById('wizard-btn-descargar-csv');
-        if (btnDescarga) {
-          btnDescarga.onclick = function () { descargarArchivoCSV(respuestaObj.csvData, respuestaObj.fileName); };
-        }
 
         wizardGenerarResumenAcumuladoOC();
 
