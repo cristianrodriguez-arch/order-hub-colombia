@@ -433,7 +433,7 @@ function obtenerArchivosCliente_(folder, configCli) {
 /**
  * Lee la hoja Destinatarios y crea un diccionario para buscar un destino por clave.
  * Cada fila se guarda por el valor de cruce_cliente (si tiene) y por id_destino (si tiene).
- * La ciudad sale de la columna que contiene "ciudad", "poblacion" o "municipio"; si la celda está vacía, se usa "COTA".
+ * La ciudad sale de la columna que contiene "ciudad", "poblacion" o "municipio"; si la celda está vacía, la ciudad queda vacía (nunca se asigna una ciudad por defecto).
  *
  * @return {Object} Diccionario { "<clave>": { idDestino: String, nombreDestino: String, ciudad: String } }.
  *   Devuelve {} si no existe la hoja o si solo tiene encabezados.
@@ -460,7 +460,7 @@ function obtenerDiccionarioDestinatarios() {
     const idDestino = colIdDestino !== -1 ? String(data[i][colIdDestino]).trim() : "";
     const nombreDestino = colNombreDestino !== -1 ? String(data[i][colNombreDestino]).trim() : "";
     
-    let ciudadVal = "COTA";
+    let ciudadVal = ""; // sin ciudad por defecto: quien la use debe avisar si viene vacía
     if (colCiudad !== -1 && data[i][colCiudad]) {
       ciudadVal = String(data[i][colCiudad]).trim().toUpperCase();
     }
@@ -697,5 +697,25 @@ function formatearFechaSap_(fechaIso) {
  */
 function csvEscaparCampo_(val) {
   const s = (val === null || val === undefined) ? "" : String(val);
-  return (s.includes(CSV_SAP.SEPARADOR) || s.includes('"')) ? `"${s.replace(/"/g, '""')}"` : s;
+  // También se entrecomilla si hay saltos de línea: un salto sin comillas partiría la fila del CSV
+  return (s.includes(CSV_SAP.SEPARADOR) || s.includes('"') || s.includes("\n") || s.includes("\r")) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * Ejecuta una función con el bloqueo de Apps Script, para que dos guardados a la vez no
+ * escriban en CONSOLIDADO al mismo tiempo (dos consecutivos iguales o dos registros de la misma OC).
+ * Espera hasta 30 segundos; si no consigue el bloqueo, Apps Script lanza error y no se guarda nada.
+ *
+ * @param {Function} fn Función a ejecutar mientras se tiene el bloqueo.
+ * @return {*} Lo que devuelve fn.
+ * Escribe: no escribe por sí misma; fn decide qué escribe.
+ */
+function conBloqueoScript_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
 }

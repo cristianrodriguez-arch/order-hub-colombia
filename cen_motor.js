@@ -42,7 +42,7 @@ function preAnalizarCEN() {
   try {
     const configCli = CONFIG.CLIENTES["CEN"];
     if (!configCli || !configCli.FOLDER_ID) {
-      throw new Error("La configuración de CEN no está definida en CONFIG de main.gs.");
+      throw new Error("La configuración de CEN no está definida en CONFIG de main.js.");
     }
 
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -209,7 +209,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
           // No se inventa un Solicitante SAP: la OC se bloquea hasta registrar el comprador en
           // CONFIG.CLIENTES.CEN.MAPEO_CLIENTES, y el Excel se queda en la carpeta de entrada.
           estado.bloqueado = true;
-          const msgError = `Cliente no homologado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Agréguelo a MAPEO_CLIENTES en main.gs.`;
+          const msgError = `Cliente no homologado: "${nombreComprador}" (EAN ${eanComprador || "N/A"}), OC ${ocRaw}, archivo ${file.getName()}. Agréguelo a MAPEO_CLIENTES en main.js.`;
           if (!errores.includes(msgError)) errores.push(msgError);
           continue;
         }
@@ -231,11 +231,14 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
           const eanEntrega = colLugarEntregaEan !== -1 ? String(row[colLugarEntregaEan]).trim() : "";
           const nombreEntrega = colLugarEntregaNombre !== -1 ? String(row[colLugarEntregaNombre]).trim() : "";
 
-          const destinoMap = diccDestinatarios[eanEntrega] || diccDestinatarios[clienteInternoObj.solicitante] || {
-            idDestino: clienteInternoObj.solicitante,
-            nombreDestino: nombreEntrega || clienteInternoObj.nombreDisplay,
-            ciudad: "COTA"
-          };
+          const destinoMap = diccDestinatarios[eanEntrega] || diccDestinatarios[clienteInternoObj.solicitante];
+          if (!destinoMap || !destinoMap.ciudad) {
+            // No se inventa destino ni ciudad: la OC no se registra hasta homologar el lugar de entrega
+            const msgDestino = `Destino no homologado en CEN: OC ${ocRaw} (lugar de entrega EAN ${eanEntrega || "N/A"}, "${nombreEntrega || "sin nombre"}"). Agréguelo en Destinatarios con su ciudad.`;
+            if (!errores.includes(msgDestino)) errores.push(msgDestino);
+            estado.bloqueado = true;
+            continue;
+          }
 
           let fechaPedidoStr = colFechaDoc !== -1 && row[colFechaDoc] ? cen_formatFechaStr_(row[colFechaDoc]) : Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
           let fechaEntregaStr = colFechaEnt !== -1 && row[colFechaEnt] ? cen_formatFechaStr_(row[colFechaEnt]) : "";
@@ -253,7 +256,7 @@ function cen_motorLecturaExcel(archivos, diccBodega, configCli, pedidosProcesado
             Fecha_Entrega: fechaEntregaStr,
             Id_Destino: destinoMap.idDestino,
             Destinatario: destinoMap.nombreDestino,
-            Ciudad: destinoMap.ciudad || "COTA",
+            Ciudad: destinoMap.ciudad,
             Archivo_Nombre: file.getName(),
             Archivo_Id: file.getId()
           };
@@ -740,7 +743,6 @@ function guardarDefinitivoCEN(paquete) {
             fechaEntrega: paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "",
             lineas: []
           };
-          pedidosCsv.push(pedidoCsv);
 
           itemsPedido.forEach(item => {
             const matSeleccionado = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? String(paquete.materialesSeleccionados[item.Item_ID]).trim() : "";
@@ -752,7 +754,11 @@ function guardarDefinitivoCEN(paquete) {
             pedidoCsv.lineas.push({ material: isNoActualizado ? "" : matSeleccionado, cantidad: cant });
           });
 
-          if (totalUnidades > 0) combosPaquete.add(p.Combo_Key);
+          // Solo entran al CSV las órdenes con unidades: son las mismas que se registran en CONSOLIDADO
+          if (totalUnidades > 0) {
+            combosPaquete.add(p.Combo_Key);
+            pedidosCsv.push(pedidoCsv);
+          }
         });
 
         notificaciones.push({ pedidosCli: pedidosCli, kamInfo: kamInfo, clienteNombre: primerPedido.Cliente_Nombre, solicitanteSap: solicitanteSap });
@@ -760,6 +766,20 @@ function guardarDefinitivoCEN(paquete) {
 
       // Filas provisionales de esta sesión: se confirman las que siguen en el paquete; el resto se borra.
       const provisionales = cen_listarProvisionales_(sh, paquete.sessionId);
+
+      // Control: el CSV y CONSOLIDADO deben tener EXACTAMENTE las mismas órdenes.
+      // Si no coinciden, no se genera el CSV, se borran las provisionales y se avisa.
+      const combosProvisionales = new Set(provisionales.map(r => r.combo));
+      const soloEnCsv = [...combosPaquete].filter(c => !combosProvisionales.has(c));
+      const soloEnConsolidado = provisionales.filter(r => !combosPaquete.has(r.combo)).map(r => r.oc);
+      if (soloEnCsv.length > 0 || soloEnConsolidado.length > 0) {
+        cen_borrarProvisionales_(sh, paquete.sessionId);
+        throw new Error("El CSV y CONSOLIDADO no coinciden, por eso no se generó el CSV y no se registró nada. " +
+          (soloEnCsv.length > 0 ? "Van al CSV pero no quedaron en CONSOLIDADO: " + soloEnCsv.map(c => c.split("_")[0]).join(", ") + ". " : "") +
+          (soloEnConsolidado.length > 0 ? "Están en CONSOLIDADO pero no en el CSV: " + soloEnConsolidado.join(", ") + ". " : "") +
+          "Vuelva a analizar CEN.");
+      }
+
       const aConfirmar = provisionales.filter(r => combosPaquete.has(r.combo));
       if (aConfirmar.length === 0) {
         throw new Error("No hay órdenes provisionales de esta sesión para confirmar. Vuelva a registrar los clientes.");
@@ -906,7 +926,7 @@ function cen_limpiarEan_(val) {
   }
   if (s.includes(".")) s = s.split(".")[0];
   s = s.replace(/\D/g, "");
-  if (s.length > 13) s = s.substring(0, 13);
+  // Sin recorte: un código de más de 13 dígitos no coincide con el catálogo y se reporta como no actualizado.
   return s;
 }
 
@@ -984,7 +1004,7 @@ function cen_getKamInfo_(solicitanteSap, clienteNombre) {
         };
       }
     } catch (eCentral) {
-      console.warn("Llamada a obtenerInfoKamPorSolicitante_ en main.gs falló: " + eCentral.message);
+      console.warn("Llamada a obtenerInfoKamPorSolicitante_ en main.js falló: " + eCentral.message);
     }
   }
 
@@ -1010,7 +1030,8 @@ function cen_getKamInfo_(solicitanteSap, clienteNombre) {
         const nomVal = colNomCli !== -1 ? cen_normalizeKey_(dataAsig[i][colNomCli]) : "";
 
         const matchSap = sapVal && sapVal === normTargetSap;
-        const matchNom = normTargetNom && nomVal && (normTargetNom.includes(nomVal) || nomVal.includes(normTargetNom));
+        // El nombre debe coincidir completo: antes bastaba con que uno contuviera al otro (un nombre corto asignaba otro KAM)
+        const matchNom = normTargetNom && nomVal && normTargetNom === nomVal;
 
         if (matchSap || matchNom) {
           const kamMail = colMail !== -1 ? String(dataAsig[i][colMail]).trim() : "";
@@ -1073,7 +1094,8 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
 
   // 2. Un bloque por OC: separar posiciones OK, back order y sin material, y calcular valores.
   pedidosCli.forEach(p => {
-    const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID);
+    // Por OC y cliente: dos clientes pueden traer el mismo número de OC en el mismo lote
+    const itemsPedido = paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key);
     let itemsNoActualizados = [];
     let itemsValidos = [];
     let totalValorOk = 0;

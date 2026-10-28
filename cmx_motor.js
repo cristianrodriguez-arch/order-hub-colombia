@@ -54,7 +54,7 @@ function preAnalizarCMX() {
   try {
     const configCli = CONFIG.CLIENTES["CMX"];
     if (!configCli) {
-      throw new Error("No se encontró la configuración del cliente CMX en CONFIG de main.gs.");
+      throw new Error("No se encontró la configuración del cliente CMX en CONFIG de main.js.");
     }
 
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -116,7 +116,7 @@ function preAnalizarCMX() {
             diccDestinatarios[cruceVal] = {
               idDestino: String(dataDest[i][colIdDest]).trim(),
               nombreDestino: colNomDest !== -1 ? String(dataDest[i][colNomDest]).trim() : "",
-              ciudad: colCiudad !== -1 ? String(dataDest[i][colCiudad]).trim().toUpperCase() : "COTA"
+              ciudad: colCiudad !== -1 ? String(dataDest[i][colCiudad]).trim().toUpperCase() : ""
             };
             diccBodega[cruceVal] = String(dataDest[i][colIdDest]).trim();
           }
@@ -393,7 +393,7 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
     const filaTexto = data[r].map(c => String(c).toUpperCase().trim());
     const filaUnida = filaTexto.join(" ");
 
-    if (!cabecera.ordenCompra && (filaUnida.includes("ORDEN") || filaUnida.includes("PEDIDO") || filaUnida.includes("O.C") || filaUnida.includes("PO") || filaUnida.includes("N°"))) {
+    if (!cabecera.ordenCompra && ["ORDEN", "PEDIDO", "O.C", "PO", "N°"].some(et => cmx_tieneEtiqueta_(filaUnida, et))) {
       let rawOc = cmx_buscarValorAlLado_O_Abajo_(data, r, ["OC", "O.C", "COMPRA", "PEDIDO", "ORDER", "PURCHASE", "PO", "N°", "NRO", "NOC", "NOOC"]);
       if (rawOc) {
         cabecera.ordenCompra = rawOc.replace(/^(OC|O\.C|PEDIDO|N°|NRO)\s*/i, "").trim();
@@ -589,11 +589,27 @@ function cmx_limpiarEanDeVerdad_(val) {
   
   s = s.replace(/\D/g, "");
   
-  if (s.length > 13) {
-    s = s.substring(0, 13);
-  }
+  // Sin recorte: un código de más de 13 dígitos no coincide con el catálogo y se reporta como no actualizado.
   
   return s;
+}
+
+/**
+ * ¿El texto contiene la etiqueta como PALABRA completa? Así "PO" coincide con "PO 123" pero no con "PROCESO".
+ * @param {String} texto Texto en mayúsculas (la fila unida).
+ * @param {String} etiqueta Etiqueta a buscar, por ejemplo "PO", "O.C" o "N°".
+ * @return {Boolean}
+ */
+function cmx_tieneEtiqueta_(texto, etiqueta) {
+  let desde = 0;
+  while (true) {
+    const pos = texto.indexOf(etiqueta, desde);
+    if (pos < 0) return false;
+    const antes = pos === 0 ? "" : texto.charAt(pos - 1);
+    const despues = texto.charAt(pos + etiqueta.length);
+    if (!/[A-Z0-9]/.test(antes) && !/[A-Z0-9]/.test(despues)) return true;
+    desde = pos + 1;
+  }
 }
 
 /**
@@ -615,7 +631,11 @@ function cmx_buscarValorAlLado_O_Abajo_(data, row, keywords) {
     const cellVal = cmx_normalizeKey_(data[row][c]);
     if (!cellVal) continue;
 
-    const match = keywords.some(kw => cellVal === cmx_normalizeKey_(kw) || cellVal.includes(cmx_normalizeKey_(kw)));
+    // Las etiquetas cortas (PO, OC, N) solo cuentan si la celda es exactamente esa palabra; las largas admiten subcadenas.
+    const match = keywords.some(kw => {
+      const k = cmx_normalizeKey_(kw);
+      return k.length <= 3 ? cellVal === k : cellVal.includes(k);
+    });
     if (match) {
       for (let i = c + 1; i < data[row].length; i++) {
         let valDer = data[row][i];
@@ -660,10 +680,10 @@ function cmx_normalizeKey_(text) {
 }
 
 /**
- * Arma el mapa de precios y materiales de la hoja Productos, en dos fases:
- * Fase 1: carga todos los productos (catálogo general) como respaldo; si una clave ya existe, no se cambia.
- * Fase 2: sobrescribe con la tarifa de CMX: solo las filas cuya columna "Lista Cliente" coincide
- *         con la lista de CMX (CONFIG.CLIENTES.CMX.LISTA_PRECIOS).
+ * Arma el mapa de precios y materiales de la hoja Productos usando SOLO la tarifa de CMX:
+ * se toman únicamente las filas cuya columna "Lista Cliente" coincide EXACTAMENTE con la lista
+ * de CMX (CONFIG.CLIENTES.CMX.LISTA_PRECIOS). Filas sin lista, o con otra lista, se ignoran.
+ * Un producto que no esté en la lista de CMX no tiene precio y queda como "no actualizado".
  * Cada clave es el EAN o el material, normalizados con cmx_normalizeKey_.
  *
  * Lee la hoja Productos (no escribe). Si la hoja no existe, o no tiene las columnas EAN, Costo
@@ -714,30 +734,13 @@ function cmx_getProductosPreciosMap_() {
   
   const targetListaKey = cmx_normalizeKey_(CONFIG.CLIENTES["CMX"].LISTA_PRECIOS || "CMX\nCADA PIEL\nThe Beauty club");
 
-  // Fase 1: Red de seguridad con catálogo global
-  for (let i = 1; i < data.length; i++) {
-    const ean = String(data[i][colEan]).trim();
-    const material = String(data[i][colMat]).trim();
-    const costo = parseFloat(data[i][colCosto]) || 0;
-    const desc = colDesc !== -1 ? String(data[i][colDesc]).trim() : "";
-    
-    const normEan = cmx_normalizeKey_(ean);
-    const normMat = cmx_normalizeKey_(material);
-    
-    if (normEan && !dicc[normEan]) {
-      dicc[normEan] = { precio: costo, descripcion: desc, materialOficial: material, eanOficial: ean };
-    }
-    if (normMat && !dicc[normMat]) {
-      dicc[normMat] = { precio: costo, descripcion: desc, materialOficial: material, eanOficial: ean };
-    }
-  }
-
+  // Solo se usa la tarifa de la lista de CMX. No hay red de seguridad con otras listas.
   // Fase 2: Sobreescribir con la tarifa específica de CMX
   for (let i = 1; i < data.length; i++) {
-    // Se acepta la fila si su Lista Cliente es la de CMX. Ojo: una Lista Cliente vacía, o una
-    // parte del nombre de la lista, también cumple esta condición.
+    // Solo se acepta la fila si su Lista Cliente es EXACTAMENTE la de CMX. Una lista vacía o un
+    // fragmento del nombre no cumple: así nunca se usa el precio de otra tarifa.
     const listaVal = cmx_normalizeKey_(data[i][colLista]);
-    if (listaVal !== targetListaKey && !targetListaKey.includes(listaVal)) continue;
+    if (!listaVal || listaVal !== targetListaKey) continue;
     
     const ean = String(data[i][colEan]).trim();
     const material = String(data[i][colMat]).trim();
@@ -854,37 +857,6 @@ function cmx_getBodegaStockMap_() {
   return stockMap;
 }
 
-/**
- * SIN USO, PENDIENTE DE ELIMINAR. Ninguna función del proyecto la llama desde que el destino
- * de CMX se decide con cmx_resolverDestino_. No se borra todavía; se deja documentada.
- * Buscaba la ciudad de un cliente en la hoja Clientes (o "Listado clientes"). Si no la encontraba,
- * devolvía "COTA", algo que hoy contradice la regla de no asignar ciudad por defecto.
- *
- * @param {String|Number} solicitanteId ID SAP del cliente a buscar.
- * @return {String} Ciudad en mayúsculas, o "COTA" si no se encuentra.
- * @throws No lanza errores controlados (si la hoja no existe devuelve "COTA").
- */
-function cmx_getCiudadParaCliente_(solicitanteId) {
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  const shClientes = ss.getSheetByName("Clientes") || ss.getSheetByName("Listado clientes") || ss.getSheetByName("Listado_clientes") || ss.getSheetByName("Listado Clientes");
-  if (!shClientes) return "COTA";
-  
-  const data = shClientes.getDataRange().getValues();
-  const head = data[0].map(h => cmx_normalizeKey_(h));
-  
-  const colPob = head.findIndex(h => h.includes("POBLACION") || h.includes("CIUDAD") || h.includes("MUNICIPIO") || h.includes("PBL"));
-  if (colPob === -1) return "COTA";
-
-  const searchKey = cmx_normalizeKey_(solicitanteId);
-
-  for (let i = 1; i < data.length; i++) {
-    let filaCompletaTexto = data[i].map(c => cmx_normalizeKey_(c));
-    if (filaCompletaTexto.includes(searchKey)) {
-      return String(data[i][colPob]).trim().toUpperCase() || "COTA";
-    }
-  }
-  return "COTA";
-}
 
 /**
  * Devuelve el nombre, las iniciales y el correo de la KAM asignada al cliente.
@@ -956,7 +928,24 @@ function cmx_getKamInitialsAndName_(solicitanteId) {
  *                 hay OC sin destino; todas las OC ya estaban registradas; no hay posiciones válidas;
  *                 no se pudo guardar el CSV (no se registra nada) o no se pudo escribir CONSOLIDADO.
  */
+/**
+ * Guarda las órdenes de CMX confirmadas en el asistente. Va dentro del bloqueo del script para que
+ * dos guardados a la vez no repitan consecutivos. Si alguna OC ya está en CONSOLIDADO, no guarda nada.
+ *
+ * @param {Object} paquete Lo que envía el asistente (pedidos, items, fechas, materiales, back orders).
+ * @return {Object} { success, mensaje, csvData, fileName } para el asistente.
+ * @throws Si alguna OC ya está registrada, o si falla algún paso crítico.
+ */
 function guardarDefinitivoCMX(paquete) {
+  return conBloqueoScript_(() => cmx_guardarDefinitivoSinBloqueo_(paquete));
+}
+
+/**
+ * Lógica real de guardado de CMX (se ejecuta dentro del bloqueo). Ver guardarDefinitivoCMX.
+ * @param {Object} paquete Lo que envía el asistente.
+ * @return {Object} { success, mensaje, csvData, fileName }.
+ */
+function cmx_guardarDefinitivoSinBloqueo_(paquete) {
   try {
     const configCli = CONFIG.CLIENTES["CMX"];
     if (!configCli) throw new Error("No se encontró la configuración para CMX.");
@@ -1003,8 +992,13 @@ function guardarDefinitivoCMX(paquete) {
       return !ocsExistentes.has(`${ocTrim}_${targetSapCheck}`);
     });
 
+    // Si alguna OC ya está en CONSOLIDADO, no se guarda NADA (antes se omitía en silencio)
+    const repetidas = paquete.pedidos.filter(p => !pedidosFiltrados.includes(p)).map(p => p.Pedido_ID);
+    if (repetidas.length > 0) {
+      throw new Error("Ya están registradas en CONSOLIDADO, por eso no se guardó nada: " + repetidas.join(", ") + ". Quítelas de la confirmación.");
+    }
     if (pedidosFiltrados.length === 0) {
-      throw new Error("La Orden de Compra elegida ya se encuentra registrada para CMX S.A.S. en el Consolidado.");
+      throw new Error("No hay órdenes nuevas para registrar en CMX.");
     }
 
     paquete.pedidos = pedidosFiltrados;
@@ -1110,6 +1104,7 @@ function guardarDefinitivoCMX(paquete) {
 
     // 8. Mover y renombrar cada Excel con el consecutivo de su propia OC. Si un archivo falla, se ignora.
     const folderDestino = DriveApp.getFolderById(configCli.PROCESSED_FOLDER_ID);
+    const avisosArchivos = []; // archivos que no se pudieron mover o renombrar: se informan en el mensaje
     pedidosRegistrados.forEach(p => {
       if (p.Archivo_Id) {
         try {
@@ -1120,7 +1115,9 @@ function guardarDefinitivoCMX(paquete) {
           const extIdx = originalName.lastIndexOf(".");
           const ext = extIdx !== -1 ? originalName.substring(extIdx) : ".xlsm";
           file.setName(nombreArchivoSap_("Pedido_" + idPorPedido[p.Pedido_ID] + ext));
-        } catch (ignore) {}
+        } catch (eRenombrar) {
+          avisosArchivos.push(`${p.Pedido_ID}: ${eRenombrar.message}`);
+        }
       }
     });
 
@@ -1135,7 +1132,8 @@ function guardarDefinitivoCMX(paquete) {
 
     return {
       success: true,
-      mensaje: `Se han procesado ${filasNuevas.length} pedidos. Consecutivos asignados: ${idsGenerados.join(", ")}`,
+      mensaje: `Se han procesado ${filasNuevas.length} pedidos. Consecutivos asignados: ${idsGenerados.join(", ")}` +
+        (avisosArchivos.length > 0 ? ` AVISO: no se pudo mover o renombrar: ${avisosArchivos.join("; ")}` : ""),
       csvData: Utilities.base64Encode(csvData, Utilities.Charset.UTF_8).replace(/[\r\n]/g, ""),
       fileName: fileName
     };

@@ -56,7 +56,7 @@ function preAnalizarMEDIPIEL() {
   const cliente = 'MEDIPIEL';
   const configCli = CONFIG.CLIENTES[cliente];
   if (!configCli || !configCli.FOLDER_ID) {
-    throw new Error('La configuración de MEDIPIEL no está definida en CONFIG de main.gs');
+    throw new Error('La configuración de MEDIPIEL no está definida en CONFIG de main.js');
   }
 
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -143,11 +143,57 @@ function preAnalizarMEDIPIEL() {
  *   - "Fallo al escribir en la Base de Datos...": CONSOLIDADO fallo. El CSV recien creado se manda a la papelera.
  *   Los errores al mover los PDF y al enviar el correo NO detienen el proceso: solo quedan en el registro (console.error).
  */
+/**
+ * Guarda las órdenes de MEDIPIEL confirmadas en el asistente. Va dentro del bloqueo del script y
+ * revisa antes de escribir que ninguna OC ya esté en CONSOLIDADO. (La lógica está en la función de abajo.)
+ *
+ * @param {Object} datosFormulario Lo que envía el asistente (pedidos, items, fechas, materiales, back orders).
+ * @return {Object} { mensaje, csvData, fileName } para el asistente.
+ * @throws Si alguna OC ya está registrada, o si falla la escritura: en ese caso no se registra nada.
+ */
 function guardarDefinitivoMEDIPIEL(datosFormulario) {
+  return conBloqueoScript_(() => medipiel_guardarDefinitivoSinBloqueo_(datosFormulario));
+}
+
+/**
+ * Revisa que las OC de la confirmación no estén ya en CONSOLIDADO para este cliente.
+ * Lee la hoja (no escribe). Si alguna ya está, lanza error con la lista.
+ *
+ * @param {SpreadsheetApp.Spreadsheet} ss Libro de cálculo.
+ * @param {Array<String>} ocs Números de OC que se van a guardar.
+ * @param {String|Number} solicitante SAP ID del cliente (MEDIPIEL).
+ */
+function medipiel_verificarNoRegistradas_(ss, ocs, solicitante) {
+  const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+  if (!sh || sh.getLastRow() < 4) return;
+  const map = medipiel_getHeaderMap_(sh, 3);
+  const colOC = map[medipiel_normalizeKey_("Orden De Compra")];
+  const colSap = map[medipiel_normalizeKey_("Sap Id")];
+  if (!colOC || !colSap) return;
+  const filas = sh.getRange(4, 1, sh.getLastRow() - 3, Math.max(colOC, colSap)).getValues();
+  const registradas = new Set();
+  filas.forEach(f => {
+    const oc = medipiel_limpiarOc_(f[colOC - 1]);
+    if (oc) registradas.add(oc + "_" + String(f[colSap - 1]).trim());
+  });
+  const repetidas = ocs.filter(oc => registradas.has(medipiel_limpiarOc_(oc) + "_" + String(solicitante).trim()));
+  if (repetidas.length > 0) {
+    throw new Error("Ya están registradas en CONSOLIDADO, por eso no se guardó nada: " + repetidas.join(", ") + ". Quítelas de la confirmación.");
+  }
+}
+
+/**
+ * Lógica real de guardado de MEDIPIEL (se ejecuta dentro del bloqueo). Antes de escribir revisa duplicados.
+ * @param {Object} datosFormulario Lo que envía el asistente.
+ * @return {Object} { mensaje, csvData, fileName }.
+ */
+function medipiel_guardarDefinitivoSinBloqueo_(datosFormulario) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const configCli = CONFIG.CLIENTES["MEDIPIEL"];
+  // Revisión final de duplicados antes de escribir nada
+  medipiel_verificarNoRegistradas_(ss, datosFormulario.pedidos.map(p => p.Pedido_ID), configCli.SOLICITANTE);
 
-  // 1. Obtención 100% DESACOPLADA de la información del KAM desde main.gs
+  // 1. Obtención 100% DESACOPLADA de la información del KAM desde main.js
   const infoKam = typeof obtenerInfoKamPorSolicitante_ === "function" 
     ? obtenerInfoKamPorSolicitante_(configCli.SOLICITANTE) 
     : null;
@@ -155,23 +201,6 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
   let codigoAgente = (infoKam && infoKam.iniciales) ? infoKam.iniciales : "SC";
   let kamEncargado = (infoKam && infoKam.nombre) ? infoKam.nombre : "KAM ENCARGADO";
   let correoKam = (infoKam && infoKam.correo) ? infoKam.correo : "";
-
-  // 2. Mapeo complementario de ciudades por subsidiario
-  const shClientes = ss.getSheetByName("Listado clientes");
-  let diccCiudades = {};
-
-  if (shClientes && shClientes.getLastRow() >= 2) {
-    const dataCli = shClientes.getDataRange().getValues();
-    const headCli = dataCli[0].map(h => medipiel_normalizeKey_(h));
-    const cSub = headCli.findIndex(h => h.includes("SUBSIDIARIO"));
-    const cPob = headCli.findIndex(h => h.includes("POBLACION") || h.includes("CIUDAD"));
-    if (cSub !== -1 && cPob !== -1) {
-      for (let i = 1; i < dataCli.length; i++) {
-        const subsidiario = String(dataCli[i][cSub]).trim();
-        if (subsidiario) diccCiudades[subsidiario] = String(dataCli[i][cPob]).trim();
-      }
-    }
-  }
 
   // 3. Preparar la hoja CONSOLIDADO
   let shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
@@ -268,7 +297,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
       const consecutivoStr = String(maxConsecutivo).padStart(4, '0');
       const idGenerado = `${codigoAgente}-${currentYearSuffix}${consecutivoStr}`;
       
-      const ciudadDestino = p.Ciudad || diccCiudades[p.Destinatario_Merc] || "COTA";
+      const ciudadDestino = p.Ciudad; // siempre viene con valor: si no, el pedido no se leyó
 
       if (!primerConsecutivoGenerado) {
         primerConsecutivoGenerado = idGenerado;
@@ -673,6 +702,11 @@ function medipiel_parsePedidoCabecera_(texto, fileId, fileName, configCli, diccD
     throw new Error(`MISSING_BODEGA|${idDestinoRaw}|${configCli.SOLICITANTE}|${configCli.NOMBRE_CLIENTE}`);
   }
 
+  // Sin ciudad en Destinatarios no se asigna una por defecto: se avisa para completar la hoja.
+  if (!destinoMap.ciudad) {
+    throw new Error(`El destino ${idDestinoRaw} no tiene ciudad en Destinatarios. Complétela y vuelva a intentar.`);
+  }
+
   return {
     Pedido_ID: ordenCompra,
     Destinatario_Merc: destinoMap.idDestino,      
@@ -683,7 +717,7 @@ function medipiel_parsePedidoCabecera_(texto, fileId, fileName, configCli, diccD
     Archivo: fileName,
     Archivo_ID: fileId,
     Archivo_URL: `https://drive.google.com/file/d/${fileId}/view`,
-    Ciudad: destinoMap.ciudad || 'COTA'
+    Ciudad: destinoMap.ciudad
   };
 }
 
