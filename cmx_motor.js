@@ -850,11 +850,8 @@ function guardarDefinitivoCMX(paquete) {
         p.Ciudad || "LA ESTRELLA",
         fechaEnt,
         totalUnidades,
-        totalValor,
-        "", 
-        "", 
-        "" // Dejado en blanco para no sobreescribir la fórmula
-      ]);
+        totalValor
+      ]); // Solo A:K: desde la L en adelante hay fórmulas y formatos condicionales
     });
 
     if (filasNuevas.length === 0) {

@@ -503,8 +503,8 @@ function cenGuardarProvisional(sessionId, conf) {
     if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
     const sufijoAno = String(new Date().getFullYear()).slice(-2);
-    // Solo se escriben las columnas A:N, como siempre. Las de la O en adelante tienen fórmulas.
-    const numCols = CONSOLIDADO_HEADERS.length;
+    // Solo se escriben las columnas A:K. Desde la L en adelante hay fórmulas y formatos condicionales.
+    const numCols = 11;
     const headerMap = medipiel_getHeaderMap_(sh, 3);
     const maxPorPrefijo = {};
     const filas = [];
@@ -540,8 +540,7 @@ function cenGuardarProvisional(sessionId, conf) {
         "Ciudad": p.Ciudad,
         "Fecha entrega": fechaEntrega,
         "Unidades": totalUnidades,
-        "Valor": totalValor,
-        "KAM": "" // DEJAR VACÍO: para que actúe la fórmula nativa de Google Sheets
+        "Valor": totalValor
       }, numCols));
       ids.push({ Id: id, Pedido_ID: p.Pedido_ID, Solicitante_SAP: p.Solicitante_SAP });
     });

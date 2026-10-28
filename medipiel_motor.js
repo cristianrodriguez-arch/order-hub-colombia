@@ -117,7 +117,8 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
   }
   
   const headerMapConsolidado = medipiel_getHeaderMap_(shConsolidado, 3);
-  const numColsConsolidado = Math.max(shConsolidado.getLastColumn() || 13, CONSOLIDADO_HEADERS.length);
+  // Solo se escriben las columnas A:K. Desde la L en adelante hay fórmulas y formatos condicionales.
+  const numColsConsolidado = 11;
 
   // 4. Consecutivo dinámico secuencial por agente (<CódigoAgente>-<Año><Consecutivo>)
   const currentYearSuffix = String(new Date().getFullYear()).slice(-2);
@@ -220,10 +221,7 @@ function guardarDefinitivoMEDIPIEL(datosFormulario) {
         "Ciudad": ciudadDestino,
         "Fecha entrega": fechaEntregaNormalObj,
         "Unidades": sumaUnidadesPedido,
-        "Valor": sumaValorPedido, 
-        "NO ENTREGA FACTURACIÓN": "",
-        "Observaciones": "",
-        "KAM": "" // Se deja en blanco para preservar la fórmula nativa de Google Sheets
+        "Valor": sumaValorPedido
       }, numColsConsolidado));
     }
   });
