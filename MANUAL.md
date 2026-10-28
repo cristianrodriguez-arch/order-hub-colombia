@@ -216,6 +216,7 @@ En el asistente de MEDIPIEL, con un producto que tenga stock:
 | `Unknown command "clasp PUSH"` | Escrito en mayúsculas. | Escribe `push` en minúsculas. |
 | `A file with this name already exists` | Conflicto de nombres en el proyecto. | Revisa el mensaje completo; no fuerces nada sin revisar. |
 | Errores de permisos al abrir la URL | La primera vez Apps Script pide autorizar. | Implementar → Revisar permisos → tu cuenta → Permitir. |
+| `Drive is not defined` al leer Excel de CEN | Falta el **servicio avanzado Drive API v2** en el proyecto. Lo usa `cen_convertirExcelASheet_` para convertir Excel en hoja de Google. | En el editor: **+ Servicios → Drive API → v2 → Añadir**. Si ya aparece, sube `appsscript.json` con `clasp.cmd push`. Luego crea una nueva versión. |
 
 Si aparece un error que no está aquí, **copia el texto completo en rojo** de la terminal
 y guárdalo en este manual en la sección 10 para revisarlo después.
@@ -227,6 +228,7 @@ y guárdalo en este manual en la sección 10 para revisarlo después.
 | Fecha | Qué pasó | Cómo se resolvió |
 |---|---|---|
 | 2026-10-28 | `clasp create` respondió "Project file already exists". Había un `.clasp.json` en la carpeta padre `ORDER HUB` apuntando a **producción**. | Se creó la carpeta `PRUEBA_ORDER_HUB` fuera de `ORDER HUB`. Producción no se modificó (comprobado: su ID de hoja sigue igual). |
+| 2026-10-28 | Al leer la carpeta CEN de prueba: "Drive is not defined". | Falta activar el servicio avanzado Drive API v2 en el proyecto de prueba (ver tabla de problemas frecuentes). |
 
 ---
 
