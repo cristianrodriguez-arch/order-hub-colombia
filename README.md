@@ -26,9 +26,7 @@ Cada uno es un módulo independiente en el dashboard, con su propio motor:
 | **MEDIPIEL** | MEDIPIEL S.A.S. | `11026712` | PDF (OCR) | El precio sale del propio PDF (columna COSTO UN) |
 | **CMX** | CMX S.A.S. (Línea Estética) | `11033482` | Excel (`.xls`/`.xlsx`/`.xlsm`) | Cada comprador usa su propia plantilla → lectura heurística. Precio desde la lista de precios del cliente |
 | **CEN** | *varios* (ver abajo) | *varios* | Excel consolidado del portal | **Multicliente**: un solo archivo trae órdenes de varios clientes finales |
-| FARMATODO | FARMATODO COLOMBIA S.A. | `11049529` ⁽¹⁾ | — | Solo tarjeta en el dashboard, sin motor todavía |
 
-⁽¹⁾ Farmatodo aún **no tiene entrada en `CONFIG.CLIENTES`**; ese SAP ID sale de la hoja `Asignacion_KAM`, no del código.
 
 ### Clientes finales dentro de CEN (portal Carvajal)
 
@@ -42,6 +40,8 @@ El archivo que baja del portal mezcla órdenes de varios clientes. Cada fila se 
 | Copservir Ltda - Drogas La Rebaja | COPERATIVA MULTIACTIVA DE SERVICIOS | `11072880` | Distribuidor |
 | Cafam | CAJA DE COMPENSACION FAMILIAR CAFAM | `11048830` | Distribuidor |
 | Coopidrogas | COOPERATIVA NACIONAL DE DROGUISTAS | `11026732` | Copidrogas |
+| Comfandi | CAJA COMP FAMILIAR COMFANDI | `11033303` | Distribuidor |
+| Breccia Salud S A S (Locatel) | BRECCIA SALUD S A S | `11027358` | Distribuidor |
 
 > **Pendiente de habilitar**: `Distribuciones Axa S.A.` (`11045975`) aparece como comprador en archivos reales del portal pero todavía no está en `MAPEO_CLIENTES`. Sus órdenes se reportan como error y se saltan hasta que se agregue (rama `fix/cen-agregar-comfandi-axa`, en validación). `Comfandi` ya está habilitado.
 
