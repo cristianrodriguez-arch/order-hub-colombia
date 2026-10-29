@@ -62,35 +62,12 @@ function preAnalizarCMX() {
     // -------------------------------------------------------------------------------------
     // PASO 1: DETECTOR DE DUPLICADOS EN EL CONSOLIDADO (CLAVE COMPUESTA OC + SAP ID)
     // -------------------------------------------------------------------------------------
-    const shConsolidado = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     const pedidosProcesados = new Set();
-    
-    if (shConsolidado && shConsolidado.getLastRow() >= 2) {
-      const dataCons = shConsolidado.getDataRange().getValues();
-      let colOc = 1;  // Columna B por defecto
-      let colSap = 2; // Columna C por defecto
-      let startRow = 1;
-
-      for (let r = 0; r < Math.min(dataCons.length, 5); r++) {
-        const rowKeys = dataCons[r].map(h => cmx_normalizeKey_(h));
-        const foundOc = rowKeys.findIndex(h => h.includes("ORDEN") || h.includes("OC") || h.includes("PEDIDO"));
-        if (foundOc !== -1) {
-          colOc = foundOc;
-          const foundSap = rowKeys.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
-          if (foundSap !== -1) colSap = foundSap;
-          startRow = r + 1;
-          break;
-        }
-      }
-
-      for (let i = startRow; i < dataCons.length; i++) {
-        const ocVal = cmx_limpiarOc_(dataCons[i][colOc]);
-        const sapVal = cmx_normalizeKey_(dataCons[i][colSap]);
-        if (ocVal && sapVal) {
-          pedidosProcesados.add(`${ocVal}_${sapVal}`);
-        }
-      }
-    }
+    leerOcsRegistradasConsolidado_(ss).forEach(fila => {
+      const ocVal = cmx_limpiarOc_(fila.oc);
+      const sapVal = cmx_normalizeKey_(fila.sap);
+      if (ocVal && sapVal) pedidosProcesados.add(`${ocVal}_${sapVal}`);
+    });
 
     // -------------------------------------------------------------------------------------
     // PASO 2: MAPEO DE DESTINATARIOS (cruce por texto, Id de destino y bodega)
@@ -961,31 +938,14 @@ function cmx_guardarDefinitivoSinBloqueo_(paquete) {
     }
 
     // 3. ESCUDO EN TIEMPO REAL: vuelve a revisar CONSOLIDADO antes de escribir, por si alguien ya guardó esas OC
-    const dataConsCheck = shConsolidado.getDataRange().getValues();
-    let colOcCheck = 1;
-    let colSapCheck = 2;
-
-    for (let r = 0; r < Math.min(dataConsCheck.length, 5); r++) {
-      const rKeys = dataConsCheck[r].map(h => cmx_normalizeKey_(h));
-      const fOc = rKeys.findIndex(h => h.includes("ORDEN") || h.includes("OC") || h.includes("PEDIDO"));
-      if (fOc !== -1) {
-        colOcCheck = fOc;
-        const fSap = rKeys.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
-        if (fSap !== -1) colSapCheck = fSap;
-        break;
-      }
-    }
-
     const ocsExistentes = new Set();
     const targetSapCheck = cmx_normalizeKey_(configCli.SOLICITANTE || "11033482");
 
-    for (let i = 1; i < dataConsCheck.length; i++) {
-      const ocVal = cmx_limpiarOc_(dataConsCheck[i][colOcCheck]);
-      const sapVal = cmx_normalizeKey_(dataConsCheck[i][colSapCheck]);
-      if (ocVal && sapVal) {
-        ocsExistentes.add(`${ocVal}_${sapVal}`);
-      }
-    }
+    leerOcsRegistradasConsolidado_(ss).forEach(fila => {
+      const ocVal = cmx_limpiarOc_(fila.oc);
+      const sapVal = cmx_normalizeKey_(fila.sap);
+      if (ocVal && sapVal) ocsExistentes.add(`${ocVal}_${sapVal}`);
+    });
 
     const pedidosFiltrados = paquete.pedidos.filter(p => {
       const ocTrim = cmx_limpiarOc_(p.Pedido_ID);
@@ -1303,7 +1263,7 @@ function cmx_enviarNotificacionKam_(paquete, idsAsignados, ciudadDestino) {
         <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
           <div style="flex: 1; min-width: 0; padding-right: 10px;">
             <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.desc}</span>
-            <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.Producto_Cod} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
+            <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.ean} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
           </div>
           <div style="text-align: right; white-space: nowrap;">
             ${badge}

@@ -53,34 +53,11 @@ function preAnalizarCEN() {
 
     // 2. Leer las OC + SAP ya registradas en CONSOLIDADO, para no volver a cargarlas.
     const pedidosProcesados = new Set();
-    
-    if (shConsolidado && shConsolidado.getLastRow() >= 2) {
-      const dataCons = shConsolidado.getDataRange().getValues();
-      let colOcCons = 1;  // Columna B por defecto
-      let colSapCons = 2; // Columna C por defecto
-      let startRow = 1;
-
-      // Escaneo de filas 1 a 5 para detectar la fila real de cabeceras
-      for (let r = 0; r < Math.min(dataCons.length, 5); r++) {
-        const rowKeys = dataCons[r].map(h => cen_normalizeKey_(h));
-        const foundOc = rowKeys.findIndex(h => h.includes("ORDEN") || h.includes("OC") || h.includes("PEDIDO"));
-        if (foundOc !== -1) {
-          colOcCons = foundOc;
-          const foundSap = rowKeys.findIndex(h => h.includes("SAP") || h.includes("SOLICITANTE"));
-          if (foundSap !== -1) colSapCons = foundSap;
-          startRow = r + 1;
-          break;
-        }
-      }
-
-      for (let i = startRow; i < dataCons.length; i++) {
-        const ocVal = cen_limpiarOc_(dataCons[i][colOcCons]);
-        const sapVal = cen_normalizeKey_(dataCons[i][colSapCons]);
-        if (ocVal && sapVal) {
-          pedidosProcesados.add(`${ocVal}_${sapVal}`);
-        }
-      }
-    }
+    leerOcsRegistradasConsolidado_(ss).forEach(fila => {
+      const ocVal = cen_limpiarOc_(fila.oc);
+      const sapVal = cen_normalizeKey_(fila.sap);
+      if (ocVal && sapVal) pedidosProcesados.add(`${ocVal}_${sapVal}`);
+    });
 
     // 3. Cargar destinatarios y bodega.
     const diccDestinatarios = obtenerDiccionarioDestinatarios();
@@ -608,6 +585,26 @@ function cenGuardarProvisional(sessionId, conf) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
+
+    // 0. Escudo de duplicados: una OC + SAP ya registrada (definitiva o provisional de otra sesión) no se vuelve a guardar.
+    // Las filas provisionales de esta misma sesión no cuentan, porque al reintentar el cliente ya están escritas.
+    const ocsRegistradas = new Set();
+    const ultimaFila = sh.getLastRow();
+    if (ultimaFila >= 4) {
+      const registros = sh.getRange(4, 1, ultimaFila - 3, CEN_COL_MARCA).getValues();
+      registros.forEach(f => {
+        if (cen_esProvisional_(f[CEN_COL_MARCA - 1], sessionId)) return;
+        const oc = cen_limpiarOc_(f[1]);
+        const sap = cen_normalizeKey_(f[2]);
+        if (oc && sap) ocsRegistradas.add(`${oc}_${sap}`);
+      });
+    }
+    const repetidas = conf.pedidos
+      .filter(p => ocsRegistradas.has(`${cen_limpiarOc_(p.Pedido_ID)}_${cen_normalizeKey_(p.Solicitante_SAP)}`))
+      .map(p => p.Pedido_ID);
+    if (repetidas.length > 0) {
+      throw new Error("Ya están registradas en CONSOLIDADO, por eso no se guardó nada: " + repetidas.join(", ") + ". Quítelas de la confirmación.");
+    }
 
     // 1. Preparar: año de dos dígitos, columnas que se escriben (A a K) y mapa de encabezados (fila 3).
     const sufijoAno = String(new Date().getFullYear()).slice(-2);

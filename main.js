@@ -720,3 +720,37 @@ function conBloqueoScript_(fn) {
     lock.releaseLock();
   }
 }
+
+/**
+ * Lee de CONSOLIDADO la OC y el Sap Id de cada fila registrada. Busca los encabezados por nombre exacto
+ * ("Orden De Compra" y "Sap Id") en las primeras 5 filas. No busca por palabras sueltas: la fila de título
+ * "PEDIDOS SIN FACTURAR" contiene "PEDIDO" y no es la de encabezados.
+ * Solo lee: no escribe nada.
+ *
+ * @param {SpreadsheetApp.Spreadsheet} ss Libro de cálculo.
+ * @return {Array<{oc: *, sap: *}>} Valores crudos de cada fila de datos (sin limpiar). Lista vacía si CONSOLIDADO no tiene datos.
+ * @throws Si no encuentra las columnas. Sin ellas no se puede revisar duplicados, así que no se sigue en silencio.
+ */
+function leerOcsRegistradasConsolidado_(ss) {
+  const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+  if (!sh || sh.getLastRow() < 4) return [];
+  const data = sh.getDataRange().getValues();
+  const norm = h => String(h).trim().toUpperCase();
+  let filaEncabezados = -1;
+  for (let r = 0; r < Math.min(data.length, 5); r++) {
+    if (data[r].some(h => norm(h) === "ORDEN DE COMPRA")) { filaEncabezados = r; break; }
+  }
+  if (filaEncabezados === -1) {
+    throw new Error("No se encontró el encabezado 'Orden De Compra' en CONSOLIDADO; no se puede revisar duplicados.");
+  }
+  const colOc = data[filaEncabezados].findIndex(h => norm(h) === "ORDEN DE COMPRA");
+  const colSap = data[filaEncabezados].findIndex(h => norm(h) === "SAP ID");
+  if (colSap === -1) {
+    throw new Error("No se encontró el encabezado 'Sap Id' en CONSOLIDADO; no se puede revisar duplicados.");
+  }
+  const filas = [];
+  for (let i = filaEncabezados + 1; i < data.length; i++) {
+    filas.push({ oc: data[i][colOc], sap: data[i][colSap] });
+  }
+  return filas;
+}
