@@ -64,7 +64,7 @@ const CONSOLIDADO_HEADERS = [
  *   - OCR_LANGUAGE y TRASH_TEMP_OCR_DOC: ninguna función del proyecto los usa; no afectan el proceso.
  */
 const CONFIG = {
-  SPREADSHEET_ID: "1TAFu_ThSTccBj7uZRU3KFGWFE3mauEvqJfVfyjwInGU",
+  SPREADSHEET_ID: "1L5bxc9IXtBNUxYG54rBTESC3vkBO5HXNxV2L7vz02u8",
   SHEET_PEDIDOS: "CONSOLIDADO",
   SHEET_PRODUCTOS: "Productos",
   SHEET_BODEGA: "Bodega", 
@@ -72,13 +72,13 @@ const CONFIG = {
   OCR_LANGUAGE: "es",
   TRASH_TEMP_OCR_DOC: true, 
   LIMIT_FILES: 0,
-  FOLDER_CSV_ID: "1aOk4DI5hEpNJwxI9JD0f-MrR6g7AWA6E",
+  FOLDER_CSV_ID: "1NrHwmCYC866bej3MdUsqAWPnbSxRDs3d",
   // MODO PRUEBA. En producción debe estar apagado (ACTIVO en false). Con ACTIVO en true, los archivos y CSV
   // generados llevan el PREFIJO_ARCHIVOS, y los correos a las KAM van a CORREO_DESTINO.
   // NOTA DE REVISIÓN: si CORREO_DESTINO está vacío, el código NO deja de enviar: manda el correo a la KAM real
-  // (ver enviarCorreoKam_). Valor actual en el código: ACTIVO = true.
+  // (ver enviarCorreoKam_). Valor de producción: ACTIVO = false.
   PRUEBA: {
-    ACTIVO: true,
+    ACTIVO: false,
     PREFIJO_ARCHIVOS: "PRUEBA_",
     CORREO_DESTINO: ""
   },
@@ -89,7 +89,7 @@ const CONFIG = {
   // MAPEO_CLIENTES (solo CEN) = tabla que convierte el nombre o EAN del comprador de CEN en un cliente interno.
   CLIENTES: {
     "MEDIPIEL": {
-      FOLDER_ID: "12gYDfn3yRixa92jYQ_T08FWZGLvr5kfc",
+      FOLDER_ID: "10k7ltzA6CclAY8z9wDhEACrGl5-3bGnx",
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       SOLICITANTE: "11026712",
       NOMBRE_CLIENTE: "MEDIPIEL S.A.S.",
@@ -103,7 +103,7 @@ const CONFIG = {
       }
     },
     "CMX": {
-      FOLDER_ID: "1iNqZ-ni0PUAt_IqTpiJ0pTdEx2KwRZ_D",
+      FOLDER_ID: "1JiT2US9uOHgILK-ekaxyQdzgpG4zHwpv",
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       SOLICITANTE: "11033482",
       NOMBRE_CLIENTE: "CMX S.A.S.",
@@ -117,7 +117,7 @@ const CONFIG = {
       }
     },
     "CEN": {
-      FOLDER_ID: "1aG4LW-EDpF3jaIM6Q19EzEG_tQhEE4u7", // carpeta de prueba CEN_sin_procesar PRUEBAS
+      FOLDER_ID: "1hCjs2bI3YvvmcqIOh-NufG9CCh2Zx3RF", 
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       FILE_QUERY: "mimeType contains 'spreadsheet' or mimeType contains 'excel'",
       SAP: {
