@@ -43,13 +43,13 @@ El archivo que baja del portal mezcla órdenes de varios clientes. Cada fila se 
 | Cafam | CAJA DE COMPENSACION FAMILIAR CAFAM | `11048830` | Distribuidor |
 | Coopidrogas | COOPERATIVA NACIONAL DE DROGUISTAS | `11026732` | Copidrogas |
 
-> **Pendientes de habilitar**: `Comfandi` (`11033303`) y `Distribuciones Axa S.A.` (`11045975`) aparecen como compradores en archivos reales del portal pero todavía no están en `MAPEO_CLIENTES`. Sus órdenes se reportan como error y se saltan hasta que se agreguen (rama `fix/cen-agregar-comfandi-axa`, en validación).
+> **Pendiente de habilitar**: `Distribuciones Axa S.A.` (`11045975`) aparece como comprador en archivos reales del portal pero todavía no está en `MAPEO_CLIENTES`. Sus órdenes se reportan como error y se saltan hasta que se agregue (rama `fix/cen-agregar-comfandi-axa`, en validación). `Comfandi` ya está habilitado.
 
 Un comprador que no esté en la tabla **no se procesa**: se reporta en `errores` para que alguien lo agregue. Es deliberado — antes se le inventaba un SAP ID y se cargaba con la lista de precios de otro cliente.
 
 ## Stack
 
-**Google Apps Script** (runtime V8, web app con HtmlService). No hay Node, ni build, ni tests, ni linter — `package.json` existe solo para traer `@google/clasp`. El frontend es HTML + Tailwind (CDN) + SweetAlert2, sin framework.
+**Google Apps Script** (runtime V8, web app con HtmlService). No hay Node, ni build, ni linter — `package.json` existe solo para traer `@google/clasp`. Las pruebas automáticas (un arnés en Node que simula los globales de Apps Script) todavía no están en el repositorio. El frontend es HTML + Tailwind (CDN) + SweetAlert2, sin framework.
 
 Todo el código vive en un único proyecto Apps Script plano: **un solo scope global**, sin módulos. El "namespacing" es un prefijo de texto por cliente (`medipiel_`, `cmx_`, `cen_`).
 
@@ -88,7 +88,7 @@ Todo vive en un mismo Spreadsheet (`CONFIG.SPREADSHEET_ID`):
 
 ## Desarrollo
 
-No hay forma de ejecutar el código localmente. Se prueba desplegando y abriendo la web app.
+No hay forma de ejecutar el código localmente en Apps Script. Se prueba desplegando y abriendo la web app. Las pruebas automáticas del arnés no reemplazan esa prueba.
 
 ```bash
 npm install          # solo la primera vez (trae clasp)
@@ -104,6 +104,10 @@ git pull origin main
 clasp push
 ```
 
+Antes de subir, revisa que `CONFIG.PRUEBA.ACTIVO` esté en `false` (producción). Sube siempre desde una carpeta limpia que contenga solo los archivos del proyecto, con un `.claspignore` que excluya el resto. **Nunca** subas desde la carpeta que contiene el repositorio: clasp subiría también las copias de los archivos.
+
+Después de `clasp push`, publica una nueva versión en Apps Script: Implementar → Gestionar implementaciones → Editar → Nueva versión → Implementar. Sin este paso, la web app sigue sirviendo la versión anterior.
+
 ## Agregar un cliente nuevo
 
 1. Entrada en `CONFIG.CLIENTES[<CLIENTE>]` (`main.js`) con sus IDs de carpeta, `SOLICITANTE`, `NOMBRE_CLIENTE`, `LISTA_PRECIOS` y bloque `SAP`. **Ninguna constante de negocio va hardcodeada en el motor.**
@@ -118,7 +122,7 @@ El detalle completo de convenciones, decisiones de arquitectura y deuda técnica
 `CLAUDE.md` lleva el inventario detallado. Los puntos abiertos más relevantes:
 
 - **Lógica duplicada** entre motores (lectura de `Productos`/`Bodega`, HTML del correo al KAM) — candidata a un `utils.js` compartido.
-- **CMX**: el EAN llega como número en algunas plantillas y se pierde por notación exponencial; las fechas de vencimiento de lote salen siempre "Sin fecha"; el antiduplicados no detecta OCs repetidas.
+- **CMX**: el EAN llega como número en algunas plantillas y se pierde por notación exponencial; las fechas de vencimiento de lote salen siempre "Sin fecha"; CEN revisa duplicados al guardar cada cliente como provisional, no al confirmar el lote: si otra persona registra la misma OC entre ambos pasos, puede pasar.
 - **Zona horaria inconsistente**: `appsscript.json` declara `Europe/Madrid` mientras el código usa `"GMT-5"` hardcodeado en varios puntos.
 - **`MISSING_BODEGA`**: MEDIPIEL todavía lanza ese protocolo pero el wizard ya no lo maneja — el usuario ve el string crudo.
 - **CSV**: escapa `;` y `"` pero no neutraliza fórmulas (`=`, `+`, `-`, `@`).
