@@ -549,12 +549,33 @@ function cen_listarProvisionales_(sh, sessionId) {
  */
 function cen_borrarProvisionales_(sh, sessionId) {
   if (!sh) return 0;
-  const provisionales = cen_listarProvisionales_(sh, sessionId);
-  for (let i = provisionales.length - 1; i >= 0; i--) {
-    sh.deleteRow(provisionales[i].fila);
+  return cen_borrarFilas_(sh, cen_listarProvisionales_(sh, sessionId));
+}
+
+/**
+ * Borra de CONSOLIDADO las filas indicadas. Las filas consecutivas se borran en un solo bloque, porque borrar
+ * una por una tarda demasiado con lotes grandes.
+ *
+ * ESCRIBE: borra filas en CONSOLIDADO.
+ *
+ * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
+ * @param {Array<{fila: Number}>} filas Filas a borrar (como las devuelve cen_listarProvisionales_).
+ * @return {Number} Cantidad de filas borradas.
+ */
+function cen_borrarFilas_(sh, filas) {
+  if (!filas || filas.length === 0) return 0;
+  const bloques = [];
+  filas.map(r => r.fila).sort((a, b) => a - b).forEach(fila => {
+    const ultimo = bloques[bloques.length - 1];
+    if (ultimo && fila === ultimo.fin + 1) ultimo.fin = fila;
+    else bloques.push({ ini: fila, fin: fila });
+  });
+  // De abajo hacia arriba para que los números de fila de los bloques de arriba no cambien
+  for (let i = bloques.length - 1; i >= 0; i--) {
+    sh.deleteRows(bloques[i].ini, bloques[i].fin - bloques[i].ini + 1);
   }
-  if (provisionales.length > 0) SpreadsheetApp.flush();
-  return provisionales.length;
+  SpreadsheetApp.flush();
+  return filas.length;
 }
 
 /**
@@ -585,6 +606,11 @@ function cenGuardarProvisional(sessionId, conf) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
+
+    // Si esta sesión ya registró estas mismas órdenes (p. ej. se reintentó el guardado), se borran antes de escribir.
+    // Solo se borran las de este cliente: las de otros clientes de la misma sesión se conservan.
+    const combosConf = new Set(conf.pedidos.map(p => `${cen_limpiarOc_(p.Pedido_ID)}_${cen_normalizeKey_(p.Solicitante_SAP)}`));
+    cen_borrarFilas_(sh, cen_listarProvisionales_(sh, sessionId).filter(r => combosConf.has(r.combo)));
 
     // 0. Escudo de duplicados: una OC + SAP ya registrada (definitiva o provisional de otra sesión) no se vuelve a guardar.
     // Las filas provisionales de esta misma sesión no cuentan, porque al reintentar el cliente ya están escritas.
