@@ -657,8 +657,10 @@ function cenGuardarProvisional(sessionId, conf) {
     if (filas.length > 0) {
       const primera = sh.getLastRow() + 1;
       sh.getRange(primera, 1, filas.length, numCols).setValues(filas);
-      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:K, no toca las fórmulas)
-      filas.forEach((_, i) => sh.getRange(primera + i, CEN_COL_MARCA).setValue(cen_marcaProvisional_(sessionId)));
+      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:K, no toca las fórmulas).
+      // Se escribe en un solo bloque: una escritura por fila tardaba tanto que el bloqueo expiraba.
+      const marcas = filas.map(() => [cen_marcaProvisional_(sessionId)]);
+      sh.getRange(primera, CEN_COL_MARCA, filas.length, 1).setValues(marcas);
       SpreadsheetApp.flush();
     }
     return { ids: ids };
