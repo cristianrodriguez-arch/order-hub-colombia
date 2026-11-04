@@ -642,8 +642,11 @@ function cenGuardarProvisional(sessionId, conf) {
     const ids = [];
 
     // 2. Por cada pedido: KAM, consecutivo, unidades y valor, y fila nueva.
+    // El KAM se busca una vez por cliente. Buscarlo en cada orden leía Asignacion_KAM otra vez y el bloqueo tardaba minutos.
+    const kamPorSolicitante = {};
     conf.pedidos.forEach(p => {
-      const kamInfo = cen_getKamInfo_(p.Solicitante_SAP, p.Cliente_Nombre);
+      if (!kamPorSolicitante[p.Solicitante_SAP]) kamPorSolicitante[p.Solicitante_SAP] = cen_getKamInfo_(p.Solicitante_SAP, p.Cliente_Nombre);
+      const kamInfo = kamPorSolicitante[p.Solicitante_SAP];
       const prefix = (kamInfo.initials || "MC") + "-" + sufijoAno;
       // Se lee CONSOLIDADO una vez por prefijo; después se cuenta en memoria
       if (maxPorPrefijo[prefix] === undefined) maxPorPrefijo[prefix] = cen_obtenerMaxConsecutivo_(sh, prefix);
