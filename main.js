@@ -247,7 +247,8 @@ const CSV_SAP = {
   FORMATO_FECHA: "dd.MM.yyyy",
   PASO_POSICION: 10,
   COLUMNAS: [
-    { nombre: "Contador",                 valor: c => c.contador,                  soloPrimeraLinea: true },  // A
+    // El Contador se repite en todas las líneas del pedido (lo pide SAP); las columnas C a F solo van en la primera.
+    { nombre: "Contador",                 valor: c => c.contador },                                           // A
     { nombre: "Nº Pedido SAP",            valor: c => "" },                                                   // B
     { nombre: "Clase pedido",             valor: c => c.pedido.sap.CLASE_PEDIDO,   soloPrimeraLinea: true },  // C
     { nombre: "Org ventas",               valor: c => c.pedido.sap.ORG_VENTAS,     soloPrimeraLinea: true },  // D
