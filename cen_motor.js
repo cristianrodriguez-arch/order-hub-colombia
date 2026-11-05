@@ -549,12 +549,33 @@ function cen_listarProvisionales_(sh, sessionId) {
  */
 function cen_borrarProvisionales_(sh, sessionId) {
   if (!sh) return 0;
-  const provisionales = cen_listarProvisionales_(sh, sessionId);
-  for (let i = provisionales.length - 1; i >= 0; i--) {
-    sh.deleteRow(provisionales[i].fila);
+  return cen_borrarFilas_(sh, cen_listarProvisionales_(sh, sessionId));
+}
+
+/**
+ * Borra de CONSOLIDADO las filas indicadas. Las filas consecutivas se borran en un solo bloque, porque borrar
+ * una por una tarda demasiado con lotes grandes.
+ *
+ * ESCRIBE: borra filas en CONSOLIDADO.
+ *
+ * @param {SpreadsheetApp.Sheet} sh Hoja CONSOLIDADO.
+ * @param {Array<{fila: Number}>} filas Filas a borrar (como las devuelve cen_listarProvisionales_).
+ * @return {Number} Cantidad de filas borradas.
+ */
+function cen_borrarFilas_(sh, filas) {
+  if (!filas || filas.length === 0) return 0;
+  const bloques = [];
+  filas.map(r => r.fila).sort((a, b) => a - b).forEach(fila => {
+    const ultimo = bloques[bloques.length - 1];
+    if (ultimo && fila === ultimo.fin + 1) ultimo.fin = fila;
+    else bloques.push({ ini: fila, fin: fila });
+  });
+  // De abajo hacia arriba para que los números de fila de los bloques de arriba no cambien
+  for (let i = bloques.length - 1; i >= 0; i--) {
+    sh.deleteRows(bloques[i].ini, bloques[i].fin - bloques[i].ini + 1);
   }
-  if (provisionales.length > 0) SpreadsheetApp.flush();
-  return provisionales.length;
+  SpreadsheetApp.flush();
+  return filas.length;
 }
 
 /**
@@ -586,6 +607,11 @@ function cenGuardarProvisional(sessionId, conf) {
     const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
     if (!sh) throw new Error("No se encontró la hoja CONSOLIDADO.");
 
+    // Si esta sesión ya registró estas mismas órdenes (p. ej. se reintentó el guardado), se borran antes de escribir.
+    // Solo se borran las de este cliente: las de otros clientes de la misma sesión se conservan.
+    const combosConf = new Set(conf.pedidos.map(p => `${cen_limpiarOc_(p.Pedido_ID)}_${cen_normalizeKey_(p.Solicitante_SAP)}`));
+    cen_borrarFilas_(sh, cen_listarProvisionales_(sh, sessionId).filter(r => combosConf.has(r.combo)));
+
     // 0. Escudo de duplicados: una OC + SAP ya registrada (definitiva o provisional de otra sesión) no se vuelve a guardar.
     // Las filas provisionales de esta misma sesión no cuentan, porque al reintentar el cliente ya están escritas.
     const ocsRegistradas = new Set();
@@ -616,8 +642,11 @@ function cenGuardarProvisional(sessionId, conf) {
     const ids = [];
 
     // 2. Por cada pedido: KAM, consecutivo, unidades y valor, y fila nueva.
+    // El KAM se busca una vez por cliente. Buscarlo en cada orden leía Asignacion_KAM otra vez y el bloqueo tardaba minutos.
+    const kamPorSolicitante = {};
     conf.pedidos.forEach(p => {
-      const kamInfo = cen_getKamInfo_(p.Solicitante_SAP, p.Cliente_Nombre);
+      if (!kamPorSolicitante[p.Solicitante_SAP]) kamPorSolicitante[p.Solicitante_SAP] = cen_getKamInfo_(p.Solicitante_SAP, p.Cliente_Nombre);
+      const kamInfo = kamPorSolicitante[p.Solicitante_SAP];
       const prefix = (kamInfo.initials || "MC") + "-" + sufijoAno;
       // Se lee CONSOLIDADO una vez por prefijo; después se cuenta en memoria
       if (maxPorPrefijo[prefix] === undefined) maxPorPrefijo[prefix] = cen_obtenerMaxConsecutivo_(sh, prefix);
@@ -657,8 +686,10 @@ function cenGuardarProvisional(sessionId, conf) {
     if (filas.length > 0) {
       const primera = sh.getLastRow() + 1;
       sh.getRange(primera, 1, filas.length, numCols).setValues(filas);
-      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:K, no toca las fórmulas)
-      filas.forEach((_, i) => sh.getRange(primera + i, CEN_COL_MARCA).setValue(cen_marcaProvisional_(sessionId)));
+      // Marca PROVISIONAL en la columna V de cada fila nueva (fuera de A:K, no toca las fórmulas).
+      // Se escribe en un solo bloque: una escritura por fila tardaba tanto que el bloqueo expiraba.
+      const marcas = filas.map(() => [cen_marcaProvisional_(sessionId)]);
+      sh.getRange(primera, CEN_COL_MARCA, filas.length, 1).setValues(marcas);
       SpreadsheetApp.flush();
     }
     return { ids: ids };
@@ -1074,6 +1105,12 @@ function cen_getKamInfo_(solicitanteSap, clienteNombre) {
  * @throws Si MailApp no puede enviar el correo. guardarDefinitivoCEN captura el error y lo registra en el log.
  */
 function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
+  // Gmail limita el tamaño del cuerpo. Si el lote tiene muchas posiciones, cada OC muestra solo su resumen y el
+  // detalle por posición queda en el CSV guardado en Drive. Con lotes chicos el correo sigue mostrando todo.
+  const CEN_MAX_POSICIONES_DETALLE_CORREO = 150;
+  const totalPosiciones = pedidosCli.reduce((n, p) => n + paquete.items.filter(i => i.Pedido_ID === p.Pedido_ID && i.Cliente_Key === p.Cliente_Key).length, 0);
+  const resumenSolo = totalPosiciones > CEN_MAX_POSICIONES_DETALLE_CORREO;
+
   // 1. Encabezado del correo.
   let htmlBody = `
     <div style="font-family: 'Inter', sans-serif; color: #2B2830; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E5E7EB; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
@@ -1163,26 +1200,33 @@ function cen_enviarCorreoKam_(pedidosCli, paquete, kamInfo, clienteNombre) {
     }
 
     let listHtml = "";
-    itemsValidos.forEach(item => {
-      let badge = item.isBO
-        ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">⚠️ Back Order</span>'
-        : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">✅ OK</span>';
+    if (resumenSolo) {
+      const posicionesBO = itemsValidos.filter(i => i.isBO).length;
+      const unidades = itemsValidos.reduce((n, i) => n + i.cant, 0);
+      listHtml = `<div style="padding: 10px 0; font-size: 12px; color: #4B5563;">${itemsValidos.length} posiciones (${posicionesBO} con back order), ${unidades} unidades en total. El detalle por posición está en el CSV guardado en Drive.</div>`;
+    } else {
+      itemsValidos.forEach(item => {
+        let badge = item.isBO
+          ? '<span style="background-color: #FEF3C7; color: #D97706; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">⚠️ Back Order</span>'
+          : '<span style="background-color: #D1FAE5; color: #059669; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: bold;">✅ OK</span>';
 
-      const formattedSub = "$" + Math.round(item.subtotal).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-      const subtotalText = item.subtotal > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
+        const formattedSub = "$" + Math.round(item.subtotal).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+        const subtotalText = item.subtotal > 0 ? ` | Subtotal: <strong>${formattedSub}</strong>` : "";
 
-      listHtml += `
-        <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
-          <div style="flex: 1; min-width: 0; padding-right: 10px;">
-            <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.desc}</span>
-            <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.ean} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
+        listHtml += `
+          <div style="padding: 10px 0; border-bottom: 1px dashed #F3F4F6; display: flex; justify-content: space-between; font-size: 12px;">
+            <div style="flex: 1; min-width: 0; padding-right: 10px;">
+              <span style="font-weight: bold; color: #111827; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.desc}</span>
+              <span style="color: #6B7280; font-family: monospace; font-size: 11px;">EAN: ${item.ean} | Material SAP: <b>${item.material}</b> | ${item.cant} ud.${subtotalText}</span>
+            </div>
+            <div style="text-align: right; white-space: nowrap;">
+              ${badge}
+            </div>
           </div>
-          <div style="text-align: right; white-space: nowrap;">
-            ${badge}
-          </div>
-        </div>
-      `;
-    });
+        `;
+
+      });
+    }
 
     let statusLabel = '';
     if (itemsNoActualizados.length > 0) {

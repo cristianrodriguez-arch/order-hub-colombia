@@ -213,7 +213,7 @@ Procesa una orden de MEDIPIEL, una de CMX y una de CEN. Luego abre el CSV de
 la carpeta **CSV PRUEBAS** y revisa:
 
 - [ ] La primera línea empieza por `1;;ZDIR;Z011;10;00;...`. **No hay fila de encabezados.**
-- [ ] El Contador y las columnas C a F salen solo en la primera línea de cada pedido.
+- [ ] El Contador (columna A) se repite en todas las líneas de cada pedido; las columnas C a F salen solo en la primera línea.
 - [ ] Las fechas van como `dd.MM.yyyy`, por ejemplo `26.10.2026`.
 - [ ] La columna I (Num pedido cliente) es la **orden de compra** del cliente.
 - [ ] La columna N (Material) sale vacía cuando la referencia no tiene material.
