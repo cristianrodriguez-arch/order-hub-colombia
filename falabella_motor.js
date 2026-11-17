@@ -16,11 +16,14 @@
  * REGLA DE NEGOCIO
  *   En SAP se sube la misma OC una vez por cada local. Por eso cada combinación OC + local es un pedido:
  *   tiene su propio consecutivo, su propia fila en CONSOLIDADO y su propio bloque en el CSV.
- *   - CONSOLIDADO, columna "Orden De Compra": "<OC> - <Local>" (p. ej. "7761200 - ACQUA"). En una orden
- *     de Almacenaje (sin local) va solo la OC.
+ *   - CONSOLIDADO, columna "Orden De Compra": solo la OC. El Order Hub NO escribe el local: lo pone
+ *     facturación al prefacturar, en la segunda columna "NO ENTREGA FACTURACIÓN" (M), p. ej. "36 SAN DIEGO".
  *   - CSV, "Num pedido cliente": solo la OC (la misma para todos los locales).
- *   - Duplicados: cliente (SAP ID) + OC + local. Un local de una OC que ya está en CONSOLIDADO se omite;
- *     los demás locales de esa OC siguen.
+ *   - Duplicados: cliente (SAP ID) + OC + local, leyendo el local de esa columna M. Las filas "ANULADO"
+ *     (columna L) no cuentan. Si la OC tiene filas sin local todavía, toda la OC se toma como registrada
+ *     (ver falabella_motivoRegistrado_).
+ *   - Producto cruzado: solo si su EAN (UPC) está en la hoja Productos. Si solo está en Bodega, va a
+ *     "no cruzados": el cliente solo acepta el EAN exacto de la OC.
  *   - Fecha de entrega: se propone la "Fecha fin recepción" (fecha límite de Falabella); se puede cambiar
  *     en el asistente.
  *   - Destino: el "ID lugar de entrega" se busca en la hoja Destinatarios, en la columna Cruce_cliente de
@@ -222,7 +225,7 @@ function falabella_armarPedidos_(tablas, ctx) {
     // Una misma OC + local no puede venir en dos archivos (p. ej. el mismo Excel descargado dos veces).
     const repetidas = new Set();
     tabla.filas.forEach(f => {
-      const clave = falabella_clavePedido_(f.oc, f.localNombre, ctx.configCli.SOLICITANTE);
+      const clave = falabella_clavePedido_(f);
       if (archivoDeClave[clave] && archivoDeClave[clave] !== tabla.archivoId) repetidas.add(f.oc);
     });
     if (repetidas.size > 0) {
@@ -238,10 +241,13 @@ function falabella_armarPedidos_(tablas, ctx) {
         return;
       }
 
-      const clave = falabella_clavePedido_(f.oc, f.localNombre, ctx.configCli.SOLICITANTE);
-      const ocConsolidado = falabella_textoOcConsolidado_(f.oc, f.localNombre);
-      if (ctx.registrados.has(clave)) {
-        if (!yaProcesados.includes(ocConsolidado)) yaProcesados.push(ocConsolidado);
+      const clave = falabella_clavePedido_(f);
+      const etiqueta = f.localNombre ? `${f.oc} · ${f.localId ? f.localId + " " : ""}${f.localNombre}` : f.oc;
+      const motivo = falabella_motivoRegistrado_(ctx.registrados, f.oc, f.localId, f.localNombre);
+      if (motivo) {
+        // Si toda la OC está bloqueada por filas sin local, se informa una sola vez por OC
+        const texto = motivo.startsWith("la OC") ? `${f.oc} (${motivo})` : etiqueta;
+        if (!yaProcesados.includes(texto)) yaProcesados.push(texto);
         return;
       }
 
@@ -251,9 +257,8 @@ function falabella_armarPedidos_(tablas, ctx) {
         const pedidoId = f.localId ? `${f.oc}-${f.localId}` : (f.localNombre ? `${f.oc}-${falabella_normalizar_(f.localNombre)}` : f.oc);
         pedido = {
           Pedido_ID: pedidoId,
-          Etiqueta: f.localNombre ? `${f.oc} · ${f.localNombre}` : `${f.oc}${f.tipo ? " · " + f.tipo : ""}`,
+          Etiqueta: f.localNombre ? etiqueta : `${f.oc}${f.tipo ? " · " + f.tipo : ""}`,
           OC: f.oc,
-          OC_Consolidado: ocConsolidado,
           Local_Id: f.localId,
           Local_Nombre: f.localNombre,
           Tipo_Orden: f.tipo,
@@ -308,59 +313,124 @@ function falabella_armarPedidos_(tablas, ctx) {
 
 /**
  * Material, lotes y precio de un UPC.
- * - Precio y material oficial: lista de Falabella en Productos.
- * - Lotes: hoja Bodega. Si no hay lotes pero el producto está en la lista, va su material con stock 0
- *   (quedará como back order). Si no está en ninguna de las dos, el asistente pide el material a mano.
+ * - El producto CRUZA solo si su EAN está en la hoja Productos. Si no está (aunque esté en Bodega), queda
+ *   sin cruzar: el asistente lo muestra en "no cruzados" y va al CSV sin material, porque Falabella solo
+ *   acepta el EAN exacto de la OC.
+ * - Material oficial: el de Productos. Precio: Costo de la lista de Falabella (0 si el EAN está en Productos
+ *   pero no en esa lista).
+ * - Lotes: hoja Bodega. Sin lotes, va el material con stock 0 (quedará como back order).
  * @return {{eanMapeado: String, precio: Number, descripcion: String, materiales: Array<Object>}}
  */
-function falabella_resolverProducto_(upc, precios, bodega) {
-  const enLista = precios[upc];
-  const lotes = bodega[upc] || [];
-  if (!enLista && lotes.length === 0) return { eanMapeado: "", precio: 0, descripcion: "", materiales: [] };
+function falabella_resolverProducto_(upc, productos, bodega) {
+  const prod = productos[upc];
+  if (!prod) return { eanMapeado: "", precio: 0, descripcion: "", materiales: [] };
 
-  const materialOficial = enLista ? enLista.material : "";
+  const lotes = bodega[upc] || [];
   const materiales = lotes.length > 0
-    ? lotes.map(l => ({ material: materialOficial || l.material, stock: l.stock, fechaDisplay: l.fechaDisplay }))
-    : [{ material: materialOficial, stock: 0, fechaDisplay: "Sin stock" }];
+    ? lotes.map(l => ({ material: prod.material, stock: l.stock, fechaDisplay: l.fechaDisplay }))
+    : [{ material: prod.material, stock: 0, fechaDisplay: "Sin stock" }];
   return {
     eanMapeado: upc,
-    precio: enLista ? enLista.precio : 0,
-    descripcion: enLista ? enLista.descripcion : "",
+    precio: prod.precio,
+    descripcion: prod.descripcion,
     materiales: materiales
   };
 }
 
-/**
- * Clave de duplicados: SAP ID + OC + local, normalizados. Se arma igual desde el Excel y desde CONSOLIDADO
- * (donde la columna "Orden De Compra" guarda "<OC> - <Local>").
- */
-function falabella_clavePedido_(oc, localNombre, solicitante) {
-  return `${falabella_normalizar_(falabella_textoOcConsolidado_(oc, localNombre))}_${falabella_normalizar_(solicitante)}`;
-}
-
-/** Texto de la columna "Orden De Compra" en CONSOLIDADO: "<OC> - <Local>", o solo la OC si no hay local. */
-function falabella_textoOcConsolidado_(oc, localNombre) {
-  const local = String(localNombre || "").trim();
-  return local ? `${oc} - ${local}` : String(oc);
+/** Clave de un pedido dentro de la lectura de archivos: OC + Id de local (o nombre, o nada si es Almacenaje). */
+function falabella_clavePedido_(f) {
+  return `${f.oc}|${f.localId || falabella_normalizar_(f.localNombre)}`;
 }
 
 /**
- * Claves (falabella_clavePedido_) de los pedidos de Falabella que ya están en CONSOLIDADO.
+ * Lee de CONSOLIDADO lo que ya está registrado de Falabella, para revisar duplicados por OC + local.
+ * El local NO lo escribe el Order Hub: lo pone facturación al prefacturar, en la SEGUNDA columna
+ * "NO ENTREGA FACTURACIÓN" (columna M), con el formato "<Id de local> <Local>", p. ej. "36 SAN DIEGO".
+ * Las filas con "ANULADO" en la primera "NO ENTREGA FACTURACIÓN" (columna L) no cuentan: ese pedido
+ * se puede volver a registrar.
+ *
+ * @return {{locales: Set<String>, ocs: Object}} Ver falabella_registrosDesdeFilas_.
  * @throws Si CONSOLIDADO no tiene las columnas para revisar duplicados.
  */
 function falabella_leerRegistrados_(ss, configCli) {
-  const sapCli = falabella_normalizar_(configCli.SOLICITANTE);
-  const claves = new Set();
-  leerOcsRegistradasConsolidado_(ss).forEach(f => {
-    const sap = falabella_normalizar_(f.sap);
-    if (sap === sapCli && f.oc !== "" && f.oc !== null) claves.add(`${falabella_normalizar_(f.oc)}_${sap}`);
-  });
-  return claves;
+  const sh = ss.getSheetByName(CONFIG.SHEET_PEDIDOS || "CONSOLIDADO");
+  if (!sh || sh.getLastRow() < 4) return falabella_registrosDesdeFilas_([], [], configCli.SOLICITANTE);
+  const data = sh.getDataRange().getValues();
+  return falabella_registrosDesdeFilas_(data.slice(0, 5), data, configCli.SOLICITANTE);
 }
 
 /**
- * Precios de la lista de Falabella en la hoja Productos, por EAN: { ean: { material, precio, descripcion } }.
- * Solo se toman las filas cuya "Lista Cliente" es exactamente la de Falabella (nunca el precio de otra lista).
+ * Arma el índice de registros de Falabella a partir de los valores de CONSOLIDADO (función sin acceso a
+ * Google, para poder probarla aparte).
+ * @param {Array<Array<*>>} primeras Primeras filas de la hoja (para encontrar la fila de encabezados).
+ * @param {Array<Array<*>>} data Todas las filas de la hoja.
+ * @param {String} solicitante SAP ID de Falabella.
+ * @return {{locales: Set<String>, ocs: Object}}
+ *   locales: claves "<OC>|ID:<id de local>" y "<OC>|N:<nombre normalizado>" de los locales ya registrados.
+ *   ocs: { OC: { filas: N, sinLocal: N } } filas vigentes (no anuladas) por OC y cuántas aún no tienen local.
+ * @throws Si faltan las columnas Orden De Compra, Sap Id o las dos "NO ENTREGA FACTURACIÓN".
+ */
+function falabella_registrosDesdeFilas_(primeras, data, solicitante) {
+  const resultado = { locales: new Set(), ocs: {} };
+  if (data.length === 0) return resultado;
+  const norm = h => String(h).trim().toUpperCase();
+  const filaEnc = primeras.findIndex(f => f.some(h => norm(h) === "ORDEN DE COMPRA"));
+  if (filaEnc === -1) throw new Error("No se encontró el encabezado 'Orden De Compra' en CONSOLIDADO; no se puede revisar duplicados.");
+  const enc = data[filaEnc].map(h => falabella_normalizar_(h));
+  const colOc = enc.indexOf("ORDENDECOMPRA");
+  const colSap = enc.indexOf("SAPID");
+  const colsNoEntrega = enc.map((h, i) => h === "NOENTREGAFACTURACION" ? i : -1).filter(i => i !== -1);
+  if (colSap === -1 || colsNoEntrega.length < 2) {
+    throw new Error("CONSOLIDADO debe tener 'Sap Id' y dos columnas 'NO ENTREGA FACTURACIÓN' (la segunda es el local de Falabella); no se puede revisar duplicados.");
+  }
+  const [colEstado, colLocal] = colsNoEntrega;
+  const sapCli = falabella_normalizar_(solicitante);
+
+  for (let i = filaEnc + 1; i < data.length; i++) {
+    const fila = data[i];
+    if (falabella_normalizar_(fila[colSap]) !== sapCli) continue;
+    const oc = falabella_limpiarCodigo_(fila[colOc]);
+    if (!oc) continue;
+    if (falabella_normalizar_(fila[colEstado]).includes("ANULAD")) continue;
+
+    const info = resultado.ocs[oc] || (resultado.ocs[oc] = { filas: 0, sinLocal: 0 });
+    info.filas++;
+    const local = String(fila[colLocal] || "").trim();
+    if (!local) { info.sinLocal++; continue; }
+    const m = local.match(/^(\d+)\s*[-–.]?\s*(.*)$/);
+    if (m) {
+      resultado.locales.add(`${oc}|ID:${m[1]}`);
+      if (m[2]) resultado.locales.add(`${oc}|N:${falabella_normalizar_(m[2])}`);
+    } else {
+      resultado.locales.add(`${oc}|N:${falabella_normalizar_(local)}`);
+    }
+  }
+  return resultado;
+}
+
+/**
+ * ¿Este pedido (OC + local) ya está en CONSOLIDADO? Devuelve el motivo, o "" si es nuevo.
+ * - Con local: está si facturación ya escribió ese local (por Id de local o por nombre) en una fila vigente
+ *   de la OC. Si la OC tiene filas vigentes SIN local escrito todavía, no se puede saber qué locales son,
+ *   así que toda la OC se considera registrada hasta que facturación complete la columna.
+ * - Sin local (Almacenaje): está si la OC tiene cualquier fila vigente.
+ */
+function falabella_motivoRegistrado_(reg, oc, localId, localNombre) {
+  const info = reg.ocs[oc];
+  if (!info) return "";
+  if (!localId && !localNombre) return "ya registrada";
+  if (info.sinLocal > 0) return `la OC tiene ${info.sinLocal} pedido(s) registrados sin local en "NO ENTREGA FACTURACIÓN"`;
+  if ((localId && reg.locales.has(`${oc}|ID:${localId}`)) || (localNombre && reg.locales.has(`${oc}|N:${falabella_normalizar_(localNombre)}`))) {
+    return "local ya registrado";
+  }
+  return "";
+}
+
+/**
+ * Catálogo de la hoja Productos por EAN: { ean: { material, precio, descripcion, enLista } }.
+ * Están TODOS los EAN de la hoja (cualquier lista), porque estar en Productos es lo que hace que un
+ * producto cruce. El precio solo sale de las filas cuya "Lista Cliente" es exactamente la de Falabella
+ * (nunca el precio de otra lista); si el EAN no está en esa lista, precio 0 y enLista false.
  */
 function falabella_getPreciosMap_(ss, configCli) {
   const sh = ss.getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
@@ -376,13 +446,17 @@ function falabella_getPreciosMap_(ss, configCli) {
   }
   const lista = falabella_normalizar_(configCli.LISTA_PRECIOS);
   for (let i = 1; i < data.length; i++) {
-    if (falabella_normalizar_(data[i][cLista]) !== lista) continue;
     const ean = falabella_limpiarCodigo_(data[i][cEan]);
-    if (!ean) continue;
+    const material = String(data[i][cMat]).trim();
+    if (!ean || !material) continue;
+    const esLista = falabella_normalizar_(data[i][cLista]) === lista;
+    if (mapa[ean] && mapa[ean].enLista) continue; // ya tiene la fila de la lista de Falabella
+    if (mapa[ean] && !esLista) continue;          // primera fila encontrada de otra lista
     mapa[ean] = {
-      material: String(data[i][cMat]).trim(),
-      precio: falabella_numero_(data[i][cCosto]),
-      descripcion: cProd !== -1 ? String(data[i][cProd]).trim() : ""
+      material: material,
+      precio: esLista ? falabella_numero_(data[i][cCosto]) : 0,
+      descripcion: cProd !== -1 ? String(data[i][cProd]).trim() : "",
+      enLista: esLista
     };
   }
   return mapa;
@@ -478,9 +552,9 @@ function falabella_guardarSinBloqueo_(paquete) {
   }
 
   const registrados = falabella_leerRegistrados_(ss, configCli);
-  const repetidos = pedidos.filter(p => registrados.has(falabella_clavePedido_(p.OC, p.Local_Nombre, configCli.SOLICITANTE)));
+  const repetidos = pedidos.filter(p => falabella_motivoRegistrado_(registrados, p.OC, p.Local_Id, p.Local_Nombre));
   if (repetidos.length > 0) {
-    throw new Error("Ya están registrados en CONSOLIDADO, por eso no se guardó nada: " + repetidos.map(p => p.OC_Consolidado).join(", ") + ".");
+    throw new Error("Ya están registrados en CONSOLIDADO, por eso no se guardó nada: " + repetidos.map(p => p.Etiqueta || p.Pedido_ID).join(", ") + ".");
   }
 
   const kam = obtenerInfoKamPorSolicitante_(configCli.SOLICITANTE) || { nombre: "SIN KAM", iniciales: "MC", correo: "" };
@@ -505,7 +579,7 @@ function falabella_guardarSinBloqueo_(paquete) {
     const fechaEnt = paquete.fechasEntregas && paquete.fechasEntregas[p.Pedido_ID] ? paquete.fechasEntregas[p.Pedido_ID].fecha : "";
     filas.push([
       id,
-      p.OC_Consolidado,
+      p.OC, // Solo la OC: el local lo escribe facturación en "NO ENTREGA FACTURACIÓN" al prefacturar
       configCli.SOLICITANTE,
       configCli.NOMBRE_CLIENTE,
       p.Fecha_Pedido || Utilities.formatDate(new Date(), "GMT-5", "dd/MM/yyyy"),
