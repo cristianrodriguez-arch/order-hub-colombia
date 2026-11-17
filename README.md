@@ -26,6 +26,7 @@ Cada uno es un módulo independiente en el dashboard, con su propio motor:
 | **MEDIPIEL** | MEDIPIEL S.A.S. | `11026712` | PDF (OCR) | El precio sale del propio PDF (columna COSTO UN) |
 | **CMX** | CMX S.A.S. (Línea Estética) | `11033482` | Excel (`.xls`/`.xlsx`/`.xlsm`) | Cada comprador usa su propia plantilla → lectura heurística. Precio desde la lista de precios del cliente |
 | **CEN** | *varios* (ver abajo) | *varios* | Excel consolidado del portal | **Multicliente**: un solo archivo trae órdenes de varios clientes finales |
+| **FALABELLA** *(en pruebas)* | FALABELLA DE COLOMBIA SA | `11058231` | Excel del B2B (`distributions-details` o `products-details`) | **Un pedido por OC + local**: en CONSOLIDADO la OC va como `<OC> - <Local>`, en el CSV solo la OC. Duplicados por cliente + OC + local. Fecha de entrega propuesta = "Fecha fin recepción" |
 
 
 ### Clientes finales dentro de CEN (portal Carvajal)

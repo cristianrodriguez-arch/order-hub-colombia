@@ -18,6 +18,7 @@
               blue: '#003893',
               purple: '#9A64CD',
               cyan: '#00BCD4',
+              falabella: '#AAD500',
               white: '#FFFFFF',
               grayLight: '#FAFAFA'
             }
@@ -149,6 +150,27 @@
           </div>
         </div>
 
+        <!-- CLIENTE 4: FALABELLA -->
+        <div class="group relative bg-white rounded-xl border border-gray-200 hover:border-isdin-falabellahover:shadow-lg transition-all duration-200 flex flex-col overflow-hidden">
+          <button onclick="verificarPendientes('FALABELLA', event)" class="btn-refresh absolute top-3 right-3 z-20 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-100 transition-colors" title="Verificar pendientes">
+            <svg id="icon-falabella" class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          </button>
+
+          <div onclick="abrirModulo('FALABELLA')" class="cursor-pointer flex flex-col h-full">
+            <div class="h-32 p-6 flex justify-center items-center bg-white border-b border-gray-50">
+              <!-- Logotipo local con el verde de la marca: la página de Falabella no publica el logo como
+                   imagen enlazable (no se puede usar como en Medipiel o CMX sin depender de su sitio). -->
+              <div class="group-hover:scale-105 transition-transform duration-200">
+                <span class="font-extrabold text-4xl leading-none tracking-tight" style="color: #AAD500;">falabella<span style="color: #5F7A00;">.</span></span>
+              </div>
+            </div>
+            <div class="p-5 flex-grow flex flex-col justify-center items-center bg-gray-50/50">
+              <h3 class="text-lg font-bold text-isdin-black text-center">Falabella </h3>
+              <span id="badge-falabella" class="mt-2 text-[11px] font-bold px-3 py-1 rounded-full bg-gray-100 text-gray-500 border border-gray-200">Estado: --</span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -211,7 +233,7 @@
     }
 
     function verificarTodosPendientes() {
-      ['MEDIPIEL', 'CMX', 'CEN'].forEach(cli => verificarPendientes(cli));
+      ['MEDIPIEL', 'CMX', 'CEN', 'FALABELLA'].forEach(cli => verificarPendientes(cli));
     }
 
     function mostrarError(msg) {
