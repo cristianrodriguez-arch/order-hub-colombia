@@ -752,11 +752,13 @@ function medipiel_parseItems_(texto, pedidoId, diccBodega, diccProductos) {
   // 3. Recorrer cada fila encontrada en la tabla.
   while ((match = re.exec(bloqueTabla)) !== null) {
     const eanRaw = String(match[1]).trim();
-    // 3a. Buscar el material en Bodega por EAN.
-    let mats = eanRaw ? (diccBodega[eanRaw] || []) : [];
-    
+    // 3a. Regla de cruce (igual para todos los clientes): el producto cruza solo si su EAN está en la
+    // hoja Productos. Si solo está en Bodega, NO cruza: va a la alerta de no cruzados.
+    const cruza = !!(eanRaw && diccProductos[eanRaw]);
+    let mats = cruza ? (diccBodega[eanRaw] || []) : [];
+
     // Existe en Productos pero no en Bodega: stock 0 para que salga como Back Order, nunca como OK
-    if (mats.length === 0 && eanRaw && diccProductos[eanRaw]) {
+    if (cruza && mats.length === 0) {
         mats = [{ material: diccProductos[eanRaw], stock: 0, fechaDisplay: "Sin stock" }];
     }
     
@@ -768,7 +770,7 @@ function medipiel_parseItems_(texto, pedidoId, diccBodega, diccProductos) {
       Descripcion: String(match[3]).replace(/\s+/g, ' ').trim(),
       Cant: medipiel_parseNumber_(match[4]),
       Valor_Unitario: medipiel_parseNumber_(String(match[5]).replace(/[^\d.,-]/g, '')),
-      EAN_Mapeado: eanRaw,
+      EAN_Mapeado: cruza ? eanRaw : "",
       EAN_Cliente: eanRaw,
       Materiales_Disponibles: mats 
     });
