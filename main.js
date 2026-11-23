@@ -182,7 +182,7 @@ const CONFIG = {
     // Ver falabella_motor.js. El destino sale de Destinatarios: Id_origen = SOLICITANTE y
     // Cruce_cliente = "ID lugar de entrega" del Excel (p. ej. 8030, CD Future WMOS).
     "FALABELLA": {
-      FOLDER_ID: "", // PENDIENTE: carpeta de producción donde llegan los Excel de Falabella
+      FOLDER_ID: "1pom6pn2byWHB6n3--Mq-3Kd2p-NObIBF", // carpeta Falabella_sin_procesar
       PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
       SOLICITANTE: "11058231",
       NOMBRE_CLIENTE: "FALABELLA DE COLOMBIA SA",
