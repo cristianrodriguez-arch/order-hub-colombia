@@ -425,6 +425,8 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
 
   // 5. Stock de bodega por EAN y por material (se carga una vez por archivo).
   const stockBodega = cmx_getBodegaStockMap_();
+  // Todos los EAN de la hoja Productos (cualquier lista): estar ahí es lo que hace que un producto cruce.
+  const catalogoProductos = cmx_getCatalogoEanProductos_();
 
   // 6. Recorre los productos, debajo del encabezado de la tabla.
   for (let r = filaInicioTabla + 1; r < data.length; r++) {
@@ -437,51 +439,17 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
     if (cantidad <= 0) continue;
     if (descripcion.toUpperCase().includes("TOTAL") || rawEan.toUpperCase().includes("TOTAL")) continue;
 
-    const resultEan = cmx_procesarYBuscarEan_(rawEan, stockBodega);
-
-    let precioUnitario = 0;
-    let oficialMaterial = "";
-    const normEanMapeado = cmx_normalizeKey_(resultEan.eanMapeado);
-    
-    if (normEanMapeado && diccProductos[normEanMapeado]) {
-      precioUnitario = diccProductos[normEanMapeado].precio;
-      oficialMaterial = diccProductos[normEanMapeado].materialOficial;
-    } else if (resultEan.materialesDisponibles.length > 0) {
-      const materialSap = cmx_normalizeKey_(resultEan.materialesDisponibles[0].material);
-      if (diccProductos[materialSap]) {
-        precioUnitario = diccProductos[materialSap].precio;
-        oficialMaterial = diccProductos[materialSap].materialOficial;
-      }
-    }
-
-    let materialesFiltrados = resultEan.materialesDisponibles || [];
-    if (oficialMaterial) {
-      if (materialesFiltrados.length > 0) {
-        materialesFiltrados = materialesFiltrados.map(m => {
-          return {
-            material: oficialMaterial,
-            stock: m.stock,
-            fechaDisplay: m.fechaDisplay,
-            isExpired: m.isExpired
-          };
-        });
-      } else {
-        materialesFiltrados = [{
-          material: oficialMaterial,
-          stock: 0,
-          fechaDisplay: "Sin fecha",
-          isExpired: false
-        }];
-      }
-    }
+    // Regla de cruce (igual para todos los clientes): el producto cruza solo si su EAN está en la hoja
+    // Productos. La celda puede traer varios EAN; se usa el que esté en Productos.
+    const cruce = cmx_cruzarEanProductos_(rawEan, catalogoProductos, diccProductos, stockBodega);
 
     items.push({
-      codigo: resultEan.eanMapeado || rawEan || "SIN_EAN",
+      codigo: cruce.codigo,
       descripcion: descripcion,
       cant: cantidad,
-      valorUnitario: precioUnitario,
-      eanMapeado: resultEan.eanMapeado || "",
-      materialesDisponibles: materialesFiltrados
+      valorUnitario: cruce.precio,
+      eanMapeado: cruce.eanMapeado,
+      materialesDisponibles: cruce.materiales
     });
   }
 
@@ -489,55 +457,89 @@ function cmx_extraerDatosHeuristico_(data, diccBodega, diccProductos, configCli,
 }
 
 /**
- * Elige el código EAN de una fila de producto. Una celda puede traer varios códigos separados
- * por espacio, coma o punto y coma. Se prefiere el primero que tenga stock; si ninguno tiene,
- * se usa el primero.
+ * Separa la celda de código de barras en los EAN que trae. CMX a veces pone varios en la misma celda,
+ * separados por espacio, coma o punto y coma. Descarta los códigos de menos de 7 dígitos.
+ * Si Excel guardó los EAN pegados como número (notación científica, p. ej. 8.42942022626584e+25),
+ * se recuperan los primeros 13 dígitos, que son el primer EAN completo.
  *
- * Pasos:
- * 1. Separa la celda en códigos y limpia cada uno (solo dígitos, máximo 13).
- * 2. Descarta los códigos de menos de 7 dígitos.
- * 3. Devuelve el primer código con stock mayor a cero y sus materiales.
- * 4. Si ninguno tiene stock, devuelve el primer código y los materiales que tenga en bodega.
- *
- * @param {*} rawVal Texto de la celda de código de barras (puede estar vacía).
- * @param {Object} stockBodega Mapa de cmx_getBodegaStockMap_.
- * @return {{eanMapeado: String, materialesDisponibles: Array<Object>}}
- *   eanMapeado: código elegido, o "" si no hay código válido.
- *   materialesDisponibles: { material, stock, fechaDisplay, isExpired } de bodega, o [].
- * @throws No lanza errores.
+ * @param {*} rawVal Texto o número de la celda.
+ * @return {Array<String>} EAN candidatos, en el orden en que vienen.
  */
-function cmx_procesarYBuscarEan_(rawVal, stockBodega) {
-  let candidatos = [];
-  if (!rawVal) return { eanMapeado: "", materialesDisponibles: [] };
-
-  let partes = String(rawVal).split(/[\s,;]+/);
-  
-  partes.forEach(p => {
-    let clean = cmx_limpiarEanDeVerdad_(p);
-    if (clean && clean.length >= 7) {
-      candidatos.push(clean);
+function cmx_candidatosEan_(rawVal) {
+  if (rawVal === null || rawVal === undefined || rawVal === "") return [];
+  const candidatos = [];
+  String(rawVal).split(/[\s,;]+/).forEach(p => {
+    const cientifica = String(p).trim().match(/^(\d)(?:\.(\d+))?e\+?(\d+)$/i);
+    let clean;
+    if (cientifica && Number(cientifica[3]) >= 13) {
+      // Mantisa = los dígitos que sobrevivieron; los 13 primeros forman el primer EAN.
+      clean = (cientifica[1] + (cientifica[2] || "")).slice(0, 13);
+      if (clean.length < 13) clean = "";
+    } else {
+      clean = cmx_limpiarEanDeVerdad_(p);
     }
+    if (clean && clean.length >= 7 && !candidatos.includes(clean)) candidatos.push(clean);
   });
+  return candidatos;
+}
 
-  if (candidatos.length === 0) {
-    return { eanMapeado: "", materialesDisponibles: [] };
+/**
+ * Cruza la celda de código de barras con la hoja Productos (regla común a todos los clientes: un producto
+ * cruza solo si su EAN está en Productos; si solo está en Bodega, NO cruza y sale en la alerta de no cruzados).
+ * Con varios EAN en la celda, se usa el que esté en Productos (primero el que esté en la lista de CMX).
+ *
+ * @param {*} rawVal Celda de código de barras de la OC.
+ * @param {Object} catalogoProductos EAN normalizado -> material (cmx_getCatalogoEanProductos_; todas las listas).
+ * @param {Object} diccProductos Precios de la lista de CMX por EAN y por material (cmx_getProductosPreciosMap_).
+ * @param {Object} stockBodega Lotes por EAN (cmx_getBodegaStockMap_).
+ * @return {{codigo: String, eanMapeado: String, precio: Number, materiales: Array<Object>}}
+ *   codigo: EAN que se muestra (el que cruzó o, si ninguno, el primero de la celda).
+ *   eanMapeado: "" si no cruzó. materiales: lotes de Bodega con el material oficial, o el material
+ *   con stock 0 si no hay lotes (queda en back order); [] si no cruzó.
+ */
+function cmx_cruzarEanProductos_(rawVal, catalogoProductos, diccProductos, stockBodega) {
+  const candidatos = cmx_candidatosEan_(rawVal);
+  const enProductos = candidatos.filter(c => catalogoProductos[cmx_normalizeKey_(c)]);
+  const elegido = enProductos.find(c => diccProductos[cmx_normalizeKey_(c)]) || enProductos[0] || "";
+
+  if (!elegido) {
+    return { codigo: candidatos[0] || String(rawVal || "").trim() || "SIN_EAN", eanMapeado: "", precio: 0, materiales: [] };
   }
 
-  for (let i = 0; i < candidatos.length; i++) {
-    const cand = candidatos[i];
-    const normCand = cmx_normalizeKey_(cand);
-    const stock = stockBodega[normCand];
-    if (stock && stock.length > 0 && stock.some(s => s.stock > 0)) {
-      return { eanMapeado: cand, materialesDisponibles: stock };
-    }
-  }
+  const key = cmx_normalizeKey_(elegido);
+  const enLista = diccProductos[key];
+  const materialOficial = enLista ? enLista.materialOficial : catalogoProductos[key];
+  // Precio de la lista de CMX: por EAN, o por material si el EAN de la lista es otro del mismo producto
+  const precioLista = enLista || diccProductos[cmx_normalizeKey_(materialOficial)];
+  const lotes = stockBodega[key] || [];
+  const materiales = lotes.length > 0
+    ? lotes.map(m => ({ material: materialOficial, stock: m.stock, fechaDisplay: m.fechaDisplay, isExpired: m.isExpired }))
+    : [{ material: materialOficial, stock: 0, fechaDisplay: "Sin fecha", isExpired: false }];
 
-  const primerCandidato = candidatos[0];
-  const normFirst = cmx_normalizeKey_(primerCandidato);
-  return {
-    eanMapeado: primerCandidato,
-    materialesDisponibles: stockBodega[normFirst] || []
-  };
+  return { codigo: elegido, eanMapeado: elegido, precio: precioLista ? precioLista.precio : 0, materiales: materiales };
+}
+
+/**
+ * Todos los EAN de la hoja Productos, sin importar la lista de precios: { EAN normalizado: Material ID }.
+ * Es la referencia para decidir si un producto cruza. Solo lee.
+ * @return {Object} Mapa vacío si la hoja no existe o no tiene columnas EAN y Material.
+ */
+function cmx_getCatalogoEanProductos_() {
+  const sh = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getSheetByName(CONFIG.SHEET_PRODUCTOS || "Productos");
+  const mapa = {};
+  if (!sh) return mapa;
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return mapa;
+  const head = data[0].map(h => cmx_normalizeKey_(h));
+  const colEan = head.indexOf("EAN");
+  const colMat = head.indexOf("MATERIALID");
+  if (colEan === -1 || colMat === -1) return mapa;
+  for (let i = 1; i < data.length; i++) {
+    const ean = cmx_normalizeKey_(cmx_limpiarEanDeVerdad_(data[i][colEan]));
+    const mat = String(data[i][colMat]).trim();
+    if (ean && mat && !mapa[ean]) mapa[ean] = mat;
+  }
+  return mapa;
 }
 
 /**

@@ -205,7 +205,32 @@
       colorAccent: '#9A64CD',
       fnPreAnalizar: 'preAnalizarCMX',
       fnGuardar: 'guardarDefinitivoCMX',
-      fnGuardarDestinatario: 'guardarNuevoDestinatario'
+      fnGuardarDestinatario: 'guardarNuevoDestinatario',
+      // Órdenes sin destino reconocido: se pide el ID de destino (y la dirección, para recordarla)
+      fnResolverDestino: 'cmx_resolverDestinoPorId',
+      pideTextoDestino: true
+    },
+    FALABELLA: {
+      titulo: 'Pedidos FALABELLA',
+      tituloInicio: 'Integración de Órdenes (Falabella)',
+      textoInicio: 'Haga clic en el botón para leer los Excel descargados del B2B de Falabella. Cada local de una OC se registra como un pedido aparte.',
+      textoBotonInicio: 'Buscar órdenes Falabella',
+      textoCargando: 'Leyendo órdenes de Falabella por local...',
+      tituloSinResultados: 'Carpeta al día',
+      textoSinResultados: 'No hay órdenes nuevas de Falabella o ya fueron procesadas.',
+      etiquetaCodigo: 'UPC',
+      textoOmitir: 'Se eliminará de TODOS los locales de las órdenes de Falabella actuales.',
+      textoGuardando: 'Generando CSV de Falabella y notificando a la KAM...',
+      tituloExito: '¡Proceso Falabella Completado!',
+      prefijoError: 'Error procesando Falabella: ',
+      colorAccent: '#5F7A00',
+      fnPreAnalizar: 'preAnalizarFALABELLA',
+      fnGuardar: 'guardarDefinitivoFALABELLA',
+      // Lugar de entrega no homologado: se pide una sola vez por lugar y aplica a todos sus locales
+      fnResolverDestino: 'falabella_resolverDestinoPorId',
+      pideTextoDestino: false,
+      // La fecha de entrega propuesta es la "Fecha fin recepción" de la OC (no hoy + 7 días)
+      usarFechaEntregaOC: true
     },
     CEN: {
       titulo: 'Pedidos CEN (Portal Carvajal)',
@@ -407,10 +432,10 @@
       wizardState.clientesCenConfigurados = {};
       wizardRenderSelectorClientesCen();
     } else {
-      // CMX: las órdenes sin destino reconocido piden el ID de destino antes de seguir
-      const pendientes = wizardState.cliente === 'CMX' ? respuesta.pedidosExtraidos.filter(p => p.Destino_Pendiente) : [];
+      // CMX y FALABELLA: las órdenes sin destino reconocido piden el ID de destino antes de seguir
+      const pendientes = cfg.fnResolverDestino ? respuesta.pedidosExtraidos.filter(p => p.Destino_Pendiente) : [];
       if (pendientes.length > 0) {
-        wizardResolverDestinosCmx(pendientes, () => wizardMostrarRevisionPrincipal(respuesta));
+        wizardResolverDestinosPendientes(pendientes, () => wizardMostrarRevisionPrincipal(respuesta));
         return;
       }
       wizardMostrarRevisionPrincipal(respuesta);
@@ -429,22 +454,32 @@
   }
 
   /**
-   * Pide, orden por orden, el ID de destino de las órdenes de CMX que no se pudieron homologar.
-   * Con el ID se trae la ciudad real de Destinatarios. Si el usuario también copia la dirección
-   * de la OC, se guarda para que la próxima vez esa orden se reconozca sola.
+   * Pide el ID de destino de las órdenes que no se pudieron homologar (CMX y FALABELLA; la función del
+   * servidor sale de cfg.fnResolverDestino). Con el ID se trae la ciudad real de Destinatarios.
+   * Las órdenes con el mismo Cruce_Destino (p. ej. todos los locales de Falabella que van al mismo lugar
+   * de entrega) se resuelven con una sola pregunta. En CMX (pideTextoDestino), si el usuario también copia
+   * la dirección de la OC, se guarda para que la próxima vez esa orden se reconozca sola.
    * @param {Array} pendientes Órdenes con Destino_Pendiente.
    * @param {Function} alTerminar Se llama cuando todas tienen destino.
    */
-  function wizardResolverDestinosCmx(pendientes, alTerminar) {
+  function wizardResolverDestinosPendientes(pendientes, alTerminar) {
     if (pendientes.length === 0) return alTerminar();
+    const cfg = wizardState.config;
     const pedido = pendientes[0];
+    const grupoKey = pedido.Cruce_Destino || pedido.Pedido_ID;
+    const grupo = pendientes.filter(p => (p.Cruce_Destino || p.Pedido_ID) === grupoKey);
+    const resto = pendientes.filter(p => !grupo.includes(p));
+    const descripcion = pedido.Lugar_Entrega_Id !== undefined
+      ? `El lugar de entrega <b>${pedido.Lugar_Entrega_Id || 'sin ID'}${pedido.Lugar_Entrega_Nombre ? ' (' + pedido.Lugar_Entrega_Nombre + ')' : ''}</b> de ${grupo.length} pedido(s) no está en Destinatarios.
+         <br><span class="text-xs">Agréguelo en la hoja Destinatarios (Cruce_cliente = ID lugar de entrega) o escriba un Id_destino que ya exista para el cliente.</span>`
+      : `La orden <b>${pedido.Etiqueta || pedido.Pedido_ID}</b> no coincide con ningún destino del cliente en Destinatarios.`;
     Swal.fire({
       icon: 'warning',
       title: 'Destino no homologado',
       html: `
-        <p class="text-sm text-gray-600 mb-3">La orden <b>${pedido.Pedido_ID}</b> no coincide con ningún destino de CMX en Destinatarios.</p>
+        <p class="text-sm text-gray-600 mb-3">${descripcion}</p>
         <input id="swal-destino-id" class="swal2-input" placeholder="ID de destino (Id_destino)">
-        <input id="swal-destino-texto" class="swal2-input" placeholder="Dirección de la OC (opcional, para recordarla)">`,
+        ${cfg.pideTextoDestino ? '<input id="swal-destino-texto" class="swal2-input" placeholder="Dirección de la OC (opcional, para recordarla)">' : ''}`,
       focusConfirm: false,
       showCancelButton: true,
       confirmButtonText: 'Validar destino',
@@ -456,7 +491,8 @@
           Swal.showValidationMessage('Escriba el ID de destino');
           return false;
         }
-        return { id: id, texto: document.getElementById('swal-destino-texto').value.trim() };
+        const campoTexto = document.getElementById('swal-destino-texto');
+        return { id: id, texto: campoTexto ? campoTexto.value.trim() : '' };
       }
     }).then(res => {
       if (!res.isConfirmed) {
@@ -465,17 +501,19 @@
       }
       google.script.run
         .withSuccessHandler(destino => {
-          pedido.Id_Destino = destino.idDestino;
-          pedido.Destinatario = destino.nombreDestino;
-          pedido.Ciudad = destino.ciudad;
-          pedido.Destino_Pendiente = false;
-          wizardResolverDestinosCmx(pendientes.slice(1), alTerminar);
+          grupo.forEach(p => {
+            p.Id_Destino = destino.idDestino;
+            p.Destinatario = destino.nombreDestino;
+            p.Ciudad = destino.ciudad;
+            p.Destino_Pendiente = false;
+          });
+          wizardResolverDestinosPendientes(resto, alTerminar);
         })
         .withFailureHandler(err => {
-          mostrarError(err.message);
-          wizardResolverDestinosCmx(pendientes, alTerminar);
-        })
-        .cmx_resolverDestinoPorId(res.value.id, res.value.texto);
+          // El aviso se cierra antes de volver a preguntar, para que el usuario alcance a leerlo
+          Swal.fire({ icon: 'error', title: 'Atención', html: err.message, confirmButtonColor: '#2B2830' })
+            .then(() => wizardResolverDestinosPendientes(pendientes, alTerminar));
+        })[cfg.fnResolverDestino](res.value.id, res.value.texto);
     });
   }
 
@@ -871,10 +909,11 @@
     document.getElementById('wizard-seccion-fechas').classList.remove('hidden');
     document.getElementById('wizard-titulo-fechas').innerText = `${stepCounter++}. Programe las fechas de entrega`;
     document.getElementById('wizard-lista-pedidos').innerHTML = wizardState.payloadActual.pedidosExtraidos.map(p => {
-      let fechaIso = new Date(Date.now() + 604800000).toISOString().split('T')[0];
+      // Si el motor trae la fecha límite del cliente en formato yyyy-MM-dd (Falabella: Fecha fin recepción), se propone esa
+      let fechaIso = wizardState.config.usarFechaEntregaOC && /^\d{4}-\d{2}-\d{2}$/.test(p.Fecha_Entrega || '') ? p.Fecha_Entrega : new Date(Date.now() + 604800000).toISOString().split('T')[0];
       return `
       <div class="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
-        <p class="font-bold text-isdin-black mb-3">Orden: ${p.Pedido_ID} <span class="text-xs font-normal text-gray-400">(${p.Destinatario})</span></p>
+        <p class="font-bold text-isdin-black mb-3">Orden: ${p.Etiqueta || p.Pedido_ID} <span class="text-xs font-normal text-gray-400">(${p.Destinatario})</span></p>
         <div class="grid grid-cols-1 gap-3">
           <div><label class="block text-xs text-gray-500 mb-1">Fecha Entrega</label>
                <input type="date" id="wizard_fecha_${p.Pedido_ID}" value="${fechaIso}" class="w-full p-2 border rounded"></div>
@@ -1276,9 +1315,11 @@
    */
   function wizardGenerarResumenAcumuladoOC() {
     const resumen = {};
+    const etiquetas = {}; // Pedido_ID -> texto a mostrar (Falabella: "OC · Local")
 
     wizardState.paquetesProcesados.forEach(itemPaquete => {
       const paquete = itemPaquete.paquete;
+      (paquete.pedidos || []).forEach(p => { if (p.Etiqueta) etiquetas[p.Pedido_ID] = p.Etiqueta; });
 
       paquete.items.forEach(item => {
         let mat = (paquete.materialesSeleccionados && paquete.materialesSeleccionados[item.Item_ID]) ? paquete.materialesSeleccionados[item.Item_ID] : "";
@@ -1367,7 +1408,7 @@
         <div class="border border-gray-200 rounded-xl overflow-hidden shadow-sm bg-white">
           <div class="p-5 border-b border-gray-200 flex flex-col gap-2 bg-gray-50/50">
             <div class="flex items-center justify-between flex-wrap gap-2">
-              <span class="font-bold text-isdin-black text-base">OC: ${oc}</span>
+              <span class="font-bold text-isdin-black text-base">OC: ${etiquetas[oc] || oc}</span>
               <div class="px-3 py-1 rounded-full border text-xs font-bold ${badgeEncabezadoClass}">
                 ${statusText}
               </div>

@@ -174,8 +174,25 @@ const CONFIG = {
          NOMBRE_CLIENTE: "BRECCIA SALUD S A S",
           SOLICITANTE: "11027358",
           LISTA_PRECIOS: "Distribuidor",
-          aliases: ["Breccia Salud S A S"] 
+          aliases: ["Breccia Salud S A S"]
         }
+      }
+    },
+    // FALABELLA: Excel del B2B (distributions-details o products-details). Cada OC + local es un pedido.
+    // Ver falabella_motor.js. El destino sale de Destinatarios: Id_origen = SOLICITANTE y
+    // Cruce_cliente = "ID lugar de entrega" del Excel (p. ej. 8030, CD Future WMOS).
+    "FALABELLA": {
+      FOLDER_ID: "1pom6pn2byWHB6n3--Mq-3Kd2p-NObIBF", // carpeta Falabella_sin_procesar
+      PROCESSED_FOLDER_ID: "1dMqDRf92i5qgjUnEwvgM7qO1931YUu6z",
+      SOLICITANTE: "11058231",
+      NOMBRE_CLIENTE: "FALABELLA DE COLOMBIA SA",
+      FILE_QUERY: "mimeType contains 'spreadsheet' or mimeType contains 'excel'",
+      LISTA_PRECIOS: "Falabella\nVerite",
+      SAP: {
+        CLASE_PEDIDO: "ZDIR",
+        ORG_VENTAS: "Z011",
+        CANAL: "10",
+        SECTOR: "00"
       }
     }
   }
@@ -394,8 +411,8 @@ function contarArchivosPendientes(cliente) {
       // 2. Descartar archivos temporales generados por pruebas previas
       if (name.includes("_temp")) continue;
 
-      // 3. Para CEN y CMX, validar estrictamente que sea un Excel válido
-      if (cliente === "CEN" || cliente === "CMX") {
+      // 3. Para los clientes de Excel (CEN, CMX, FALABELLA), validar estrictamente que sea un Excel válido
+      if (cliente === "CEN" || cliente === "CMX" || cliente === "FALABELLA") {
         if (!name.endsWith(".xlsx") && !name.endsWith(".xlsm") && !name.endsWith(".xls")) {
           continue;
         }
